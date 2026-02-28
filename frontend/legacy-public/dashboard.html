@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Campaign Dashboard | Email Marketing</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          MailPilot
+        </div>
+        <nav class="nav">
+          <a class="nav-link" href="/schedule.html">Schedule Campaign</a>
+          <a class="nav-link active" href="/dashboard.html">Campaign Dashboard</a>
+        </nav>
+        <p class="sidebar-caption">
+          Track send performance, email opens, and recipient-level delivery status in real time.
+        </p>
+      </aside>
+
+      <main class="content">
+        <header class="page-header">
+          <div>
+            <h1 class="page-title">Campaign Dashboard</h1>
+            <div class="page-subtitle">View all sent campaigns and recipient open-status events.</div>
+          </div>
+          <div class="inline-actions" style="margin-top:0;">
+            <div id="dashboardAccountBadge" class="badge badge-medium">Checking account...</div>
+            <button id="refreshBtn" class="btn btn-secondary" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <section class="kpi-grid">
+          <div class="kpi">
+            <div class="kpi-title">Total Campaigns</div>
+            <div id="kpiCampaigns" class="kpi-value">0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-title">Total Sent</div>
+            <div id="kpiSent" class="kpi-value">0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-title">Total Opened</div>
+            <div id="kpiOpened" class="kpi-value">0</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi-title">Open Rate</div>
+            <div id="kpiOpenRate" class="kpi-value">0%</div>
+          </div>
+        </section>
+
+        <section class="split" style="margin-top:16px;">
+          <div class="card">
+            <h3>Campaigns</h3>
+            <p>All campaign runs with sending and open-tracking status.</p>
+            <div class="table-wrap" style="margin-top:12px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Scheduled</th>
+                    <th>Sent</th>
+                    <th>Opened</th>
+                    <th>Failed</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="campaignTableBody"></tbody>
+              </table>
+            </div>
+            <div id="campaignTableNotice" class="notice" style="display:none;"></div>
+          </div>
+
+          <div class="card">
+            <h3 id="recipientsTitle">Recipients</h3>
+            <p id="recipientsSubtitle">Select a campaign to inspect recipient-level delivery/open status.</p>
+            <div class="table-wrap" style="margin-top:12px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Status</th>
+                    <th>Sent At</th>
+                    <th>Opened At</th>
+                  </tr>
+                </thead>
+                <tbody id="recipientTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/dashboard.js"></script>
+  </body>
+</html>

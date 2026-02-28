@@ -1,0 +1,52 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Root dependencies / build artifacts
+node_modules/
+dist/
+build/
+coverage/
+.cache/
+.eslintcache
+tmp/
+.tmp/
+
+# Backend
+backend/node_modules/
+backend/dist/
+backend/build/
+backend/coverage/
+backend/.cache/
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/coverage/
+frontend/.cache/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# General env files
+.env
+.env.*
+!.env.example

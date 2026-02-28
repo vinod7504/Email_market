@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Campaign Scheduler | Email Marketing</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          MailPilot
+        </div>
+        <nav class="nav">
+          <a class="nav-link active" href="/schedule.html">Schedule Campaign</a>
+          <a class="nav-link" href="/dashboard.html">Campaign Dashboard</a>
+        </nav>
+        <p class="sidebar-caption">
+          Upload Excel recipients, draft the message, preview spam risk, and schedule or send instantly.
+        </p>
+      </aside>
+
+      <main class="content">
+        <header class="page-header">
+          <div>
+            <h1 class="page-title">Schedule Email Campaign</h1>
+            <div class="page-subtitle">Google-connected send pipeline with open tracking via ngrok/public URL.</div>
+          </div>
+          <div id="activeAccountBadge" class="badge badge-medium">No account connected</div>
+        </header>
+
+        <section class="split">
+          <div class="grid">
+            <div class="card">
+              <h2>Connection Setup</h2>
+              <p>Connect Google account and set your public tracking URL (ngrok).</p>
+
+              <div class="grid grid-2" style="margin-top:14px;">
+                <div>
+                  <label for="accountSelect">Connected Google Account</label>
+                  <select id="accountSelect"></select>
+                  <div class="inline-actions">
+                    <button class="btn btn-primary" id="connectGoogleBtn" type="button">Connect Google Account</button>
+                  </div>
+                </div>
+
+                <div>
+                  <label for="publicBaseUrl">Public Base URL (ngrok)</label>
+                  <input id="publicBaseUrl" type="url" placeholder="https://example-ngrok.ngrok-free.app" />
+                  <div class="inline-actions">
+                    <button class="btn btn-secondary" id="saveBaseUrlBtn" type="button">Save Tracking URL</button>
+                  </div>
+                </div>
+              </div>
+
+              <div id="connectionNotice" class="notice" style="display:none;"></div>
+            </div>
+
+            <div class="card">
+              <form id="campaignForm">
+                <div class="step"><span class="step-index">1</span>Upload Excel Sheet</div>
+                <label for="excelFile">Recipients File (.xlsx / .xls)</label>
+                <input id="excelFile" name="excelFile" type="file" accept=".xlsx,.xls" required />
+                <small class="muted">We scan the sheet and extract all email addresses.</small>
+
+                <div id="previewBox" class="preview-list" style="display:none;"></div>
+
+                <div style="height:12px;"></div>
+                <div class="step"><span class="step-index">2</span>Campaign Details</div>
+                <label for="campaignName">Campaign Name</label>
+                <input id="campaignName" name="name" type="text" placeholder="March Product Launch" required />
+
+                <label for="subject">Subject Line</label>
+                <input id="subject" name="subject" type="text" placeholder="Quick update for your team" required />
+
+                <label for="body">Email Body</label>
+                <textarea id="body" name="body" placeholder="Write your email body here..." required></textarea>
+
+                <label for="scheduleAt">Schedule Time (optional)</label>
+                <input id="scheduleAt" name="scheduleAt" type="datetime-local" />
+
+                <div class="step" style="margin-top:12px;"><span class="step-index">3</span>Spam Meter</div>
+                <div id="spamBadge" class="badge badge-low">Low Risk · 0/100</div>
+                <div class="meter">
+                  <div id="spamMeterFill" class="meter-fill"></div>
+                </div>
+                <small id="spamReason" class="muted">Start writing to calculate spam risk.</small>
+
+                <div class="inline-actions" style="margin-top:16px;">
+                  <button class="btn btn-primary" type="submit" id="submitCampaignBtn">Create Campaign</button>
+                </div>
+              </form>
+
+              <div id="campaignNotice" class="notice" style="display:none;"></div>
+            </div>
+          </div>
+
+          <div class="grid">
+            <div class="card">
+              <h3>Recent Campaigns</h3>
+              <p>Quick snapshot of latest sends and schedule status.</p>
+              <div class="table-wrap" style="margin-top:10px;">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Status</th>
+                      <th>Recipients</th>
+                    </tr>
+                  </thead>
+                  <tbody id="recentCampaignTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3>Tracking Notes</h3>
+              <p>
+                Open tracking relies on the hidden pixel URL in each sent email. Use `ngrok http 3000`, paste the generated URL above,
+                then send campaigns from this app.
+              </p>
+              <div class="notice" style="margin-top:12px;">
+                Tracking pixel path: <code>/track/open/:token.gif</code>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/schedule.js"></script>
+  </body>
+</html>
