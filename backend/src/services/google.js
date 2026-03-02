@@ -17,21 +17,30 @@ function getGoogleConfig() {
 
 function hasGoogleConfig() {
   const cfg = getGoogleConfig();
-  return Boolean(cfg.clientId && cfg.clientSecret && cfg.redirectUri);
+  return Boolean(cfg.clientId && cfg.clientSecret);
 }
 
-function createOAuthClient() {
+function createOAuthClient(options = {}) {
   const cfg = getGoogleConfig();
-  if (!cfg.clientId || !cfg.clientSecret || !cfg.redirectUri) {
-    throw new Error('Google OAuth config is missing. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI.');
+  const redirectUri = String(options.redirectUri || cfg.redirectUri || '').trim();
+  const allowMissingRedirectUri = Boolean(options.allowMissingRedirectUri);
+
+  if (!cfg.clientId || !cfg.clientSecret) {
+    throw new Error('Google OAuth config is missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.');
   }
 
-  return new google.auth.OAuth2(cfg.clientId, cfg.clientSecret, cfg.redirectUri);
+  if (!redirectUri && !allowMissingRedirectUri) {
+    throw new Error('Google OAuth redirect URI is missing. Set GOOGLE_REDIRECT_URI or use runtime redirect URI.');
+  }
+
+  return new google.auth.OAuth2(cfg.clientId, cfg.clientSecret, redirectUri || undefined);
 }
 
 function getGoogleAuthUrl() {
   const options = arguments.length > 0 && arguments[0] ? arguments[0] : {};
-  const oauth2Client = createOAuthClient();
+  const oauth2Client = createOAuthClient({
+    redirectUri: options.redirectUri
+  });
   return oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'select_account consent',
@@ -43,7 +52,10 @@ function getGoogleAuthUrl() {
 }
 
 async function exchangeCodeForUser(code) {
-  const oauth2Client = createOAuthClient();
+  const options = arguments.length > 1 && arguments[1] ? arguments[1] : {};
+  const oauth2Client = createOAuthClient({
+    redirectUri: options.redirectUri
+  });
   const { tokens } = await oauth2Client.getToken(code);
   oauth2Client.setCredentials(tokens);
 
@@ -84,7 +96,7 @@ function buildRawMessage({ fromEmail, toEmail, subject, htmlBody }) {
 }
 
 async function sendGmailEmail({ fromEmail, toEmail, subject, htmlBody, tokens }) {
-  const oauth2Client = createOAuthClient();
+  const oauth2Client = createOAuthClient({ allowMissingRedirectUri: true });
   oauth2Client.setCredentials(tokens);
 
   const gmail = google.gmail({
@@ -123,7 +135,7 @@ async function verifyGoogleSenderAlias({ senderEmail, tokens }) {
     };
   }
 
-  const oauth2Client = createOAuthClient();
+  const oauth2Client = createOAuthClient({ allowMissingRedirectUri: true });
   oauth2Client.setCredentials(tokens);
 
   const gmail = google.gmail({

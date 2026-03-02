@@ -55,6 +55,52 @@ function isLocalDevOrigin(origin) {
   return origin === 'http://localhost:5173' || origin === 'http://127.0.0.1:5173';
 }
 
+function getRequestHeaderFirstValue(req, name) {
+  return String(req?.get?.(name) || '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)[0] || '';
+}
+
+function getRequestBaseUrl(req) {
+  const host = getRequestHeaderFirstValue(req, 'x-forwarded-host') || getRequestHeaderFirstValue(req, 'host');
+  if (!host) {
+    return '';
+  }
+
+  const protocol = getRequestHeaderFirstValue(req, 'x-forwarded-proto') || String(req?.protocol || 'https').trim();
+  return normalizeOrigin(`${protocol}://${host}`);
+}
+
+function isLocalhostUrl(url) {
+  try {
+    const parsed = new URL(normalizeOrigin(url));
+    return parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function getGoogleRedirectUri(req) {
+  const configured = normalizeOrigin(process.env.GOOGLE_REDIRECT_URI);
+  const requestBaseUrl = getRequestBaseUrl(req);
+
+  if (configured) {
+    const configuredIsLocal = isLocalhostUrl(configured);
+    const requestIsLocal = isLocalhostUrl(requestBaseUrl);
+
+    if (!configuredIsLocal || requestIsLocal || !requestBaseUrl) {
+      return configured;
+    }
+  }
+
+  if (requestBaseUrl) {
+    return `${requestBaseUrl}/auth/google/callback`;
+  }
+
+  return configured || '';
+}
+
 function getClientUrl(req) {
   const explicitClientUrl = normalizeOrigin(process.env.CLIENT_URL);
   if (explicitClientUrl) {
@@ -255,16 +301,18 @@ router.get('/api/auth/status', async (_req, res) => {
 router.get('/api/auth/google/url', (req, res) => {
   if (!hasGoogleConfig()) {
     return res.status(400).json({
-      error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI in .env.'
+      error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env.'
     });
   }
 
   try {
     const requestedSenderEmail = normalizeEmail(req.query?.senderEmail || req.query?.aliasEmail || '');
     const state = requestedSenderEmail ? encodeStatePayload({ senderEmail: requestedSenderEmail }) : undefined;
+    const redirectUri = getGoogleRedirectUri(req);
     const url = getGoogleAuthUrl({
       state,
-      loginHint: requestedSenderEmail || undefined
+      loginHint: requestedSenderEmail || undefined,
+      redirectUri
     });
     return res.json({ url });
   } catch (error) {
@@ -597,6 +645,7 @@ router.post('/auth/disconnect', handleDisconnect);
 router.get('/auth/google/callback', async (req, res) => {
   const { code, error, error_description: errorDescription, state } = req.query;
   const clientUrl = getClientUrl(req);
+  const redirectUri = getGoogleRedirectUri(req);
 
   if (error) {
     return redirectWithOAuthError(res, clientUrl, 'google', {
@@ -614,7 +663,7 @@ router.get('/auth/google/callback', async (req, res) => {
   }
 
   try {
-    const user = await exchangeCodeForUser(code);
+    const user = await exchangeCodeForUser(code, { redirectUri });
     const statePayload = decodeStatePayload(state);
     const requestedSenderEmail = normalizeEmail(statePayload?.senderEmail || '');
 
