@@ -13,7 +13,53 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 let reconnectIntervalHandle = null;
 
-app.use(cors());
+function normalizeOrigin(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '');
+}
+
+function parseAllowedOrigins(value) {
+  return String(value || '')
+    .split(',')
+    .map((origin) => normalizeOrigin(origin))
+    .filter(Boolean);
+}
+
+function buildAllowedOrigins() {
+  const staticOrigins = [
+    'https://email-market-rkeb.onrender.com',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    normalizeOrigin(process.env.CLIENT_URL)
+  ].filter(Boolean);
+
+  const configuredOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
+  if (configuredOrigins.includes('*')) {
+    return ['*'];
+  }
+
+  return [...new Set([...staticOrigins, ...configuredOrigins])];
+}
+
+const allowedOrigins = buildAllowedOrigins();
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (allowedOrigins.includes('*') || allowedOrigins.includes(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Not allowed by CORS: ${normalizedOrigin}`));
+  }
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -50,6 +96,10 @@ if (hasClientBuild) {
 }
 
 app.use((err, _req, res, _next) => {
+  if (String(err?.message || '').toLowerCase().includes('not allowed by cors')) {
+    return res.status(403).json({ error: err.message });
+  }
+
   console.error('Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error.' });
 });

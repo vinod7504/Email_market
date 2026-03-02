@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import AppLayout from '../components/AppLayout';
-import { fetchJson, formatDateTime } from '../lib/api';
+import { fetchJson, formatDateTime, resolveApiUrl } from '../lib/api';
 
 function statusBadgeClass(status) {
   const key = String(status || '').toLowerCase();
@@ -197,7 +197,7 @@ export default function DashboardPage() {
 
     try {
       setIsExporting(true);
-      const response = await fetch(`/api/campaigns/${selectedCampaignId}/recipients/export.xlsx?openedOnly=1`);
+      const response = await fetch(resolveApiUrl(`/api/campaigns/${selectedCampaignId}/recipients/export.xlsx?openedOnly=1`));
 
       if (!response.ok) {
         const contentType = response.headers.get('content-type') || '';
