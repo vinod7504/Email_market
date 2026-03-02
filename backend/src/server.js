@@ -26,6 +26,39 @@ function parseAllowedOrigins(value) {
     .filter(Boolean);
 }
 
+function isNetlifyOrigin(origin) {
+  try {
+    const parsed = new URL(normalizeOrigin(origin));
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.netlify.app');
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isLocalDevOrigin(origin) {
+  return origin === 'http://localhost:5173' || origin === 'http://127.0.0.1:5173';
+}
+
+function resolveClientUrl() {
+  const explicitClientUrl = normalizeOrigin(process.env.CLIENT_URL);
+  if (explicitClientUrl) {
+    return explicitClientUrl;
+  }
+
+  const configuredOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
+  const netlifyClientUrl = configuredOrigins.find((origin) => isNetlifyOrigin(origin));
+  if (netlifyClientUrl) {
+    return netlifyClientUrl;
+  }
+
+  const publicClientUrl = configuredOrigins.find((origin) => !isLocalDevOrigin(origin));
+  if (publicClientUrl) {
+    return publicClientUrl;
+  }
+
+  return 'http://localhost:5173';
+}
+
 function buildAllowedOrigins() {
   const staticOrigins = [
     'https://email-market-rkeb.onrender.com',
@@ -50,7 +83,7 @@ const corsOptions = {
     }
 
     const normalizedOrigin = normalizeOrigin(origin);
-    if (allowedOrigins.includes('*') || allowedOrigins.includes(normalizedOrigin)) {
+    if (allowedOrigins.includes('*') || allowedOrigins.includes(normalizedOrigin) || isNetlifyOrigin(normalizedOrigin)) {
       return callback(null, true);
     }
 
@@ -90,7 +123,7 @@ if (hasClientBuild) {
   app.get('/', (_req, res) => {
     res.json({
       message: 'Email marketing API is running.',
-      client: process.env.CLIENT_URL || 'http://localhost:5173'
+      client: resolveClientUrl()
     });
   });
 }

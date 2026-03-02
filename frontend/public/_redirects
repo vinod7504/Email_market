@@ -1,0 +1,4 @@
+/api/* https://email-market-rkeb.onrender.com/api/:splat 200
+/auth/* https://email-market-rkeb.onrender.com/auth/:splat 200
+/track/* https://email-market-rkeb.onrender.com/track/:splat 200
+/* /index.html 200

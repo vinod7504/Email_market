@@ -51,6 +51,23 @@ function sanitizeFilePart(value, fallback = 'campaign') {
   return normalized || fallback;
 }
 
+function isOpenedRecipient(recipient = {}) {
+  return recipient.status === 'OPENED' || Boolean(recipient.opened_at) || Number(recipient.open_count || 0) > 0;
+}
+
+function parseOpenedOnly(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'all'].includes(normalized)) {
+    return false;
+  }
+
+  return true;
+}
+
 async function getPublicBaseUrl(req) {
   const envUrl = process.env.TRACKING_BASE_URL || process.env.PUBLIC_BASE_URL;
   if (envUrl) {
@@ -484,7 +501,7 @@ router.get('/api/campaigns/:id/recipients/export.xlsx', async (req, res) => {
   }
 
   const campaignId = String(req.params.id || '').trim();
-  const openedOnly = ['1', 'true', 'yes'].includes(String(req.query.openedOnly || '').toLowerCase());
+  const openedOnly = parseOpenedOnly(req.query.openedOnly);
 
   if (!isValidId(campaignId)) {
     return res.status(400).json({ error: 'Invalid campaign id.' });
@@ -497,12 +514,7 @@ router.get('/api/campaigns/:id/recipients/export.xlsx', async (req, res) => {
     }
 
     const recipients = await listCampaignRecipients(campaignId);
-    const filteredRecipients = openedOnly
-      ? recipients.filter(
-          (recipient) =>
-            recipient.status === 'OPENED' || Boolean(recipient.opened_at) || Number(recipient.open_count || 0) > 0
-        )
-      : recipients;
+    const filteredRecipients = openedOnly ? recipients.filter((recipient) => isOpenedRecipient(recipient)) : recipients;
 
     const workbookBuffer = buildCampaignRecipientsWorkbookBuffer({
       campaign,

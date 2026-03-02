@@ -47,9 +47,13 @@ function toIsoOrEmpty(value) {
   return parsed.toISOString();
 }
 
+function isOpenedRecipient(recipient = {}) {
+  return recipient.status === 'OPENED' || recipient.opened_at || Number(recipient.open_count || 0) > 0;
+}
+
 function getOpenStatus(recipient = {}) {
-  if (recipient.status === 'OPENED' || recipient.opened_at) {
-    return 'Opened';
+  if (isOpenedRecipient(recipient)) {
+    return 'Open';
   }
 
   if (recipient.status === 'SENT') {

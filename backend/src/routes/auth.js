@@ -29,8 +29,55 @@ const { inferSmtpConfigCandidates, extractEmailDomain } = require('../services/s
 
 const router = express.Router();
 
-function getClientUrl() {
-  return String(process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/+$/, '');
+function normalizeOrigin(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\/+$/, '');
+}
+
+function parseAllowedOrigins(value) {
+  return String(value || '')
+    .split(',')
+    .map((origin) => normalizeOrigin(origin))
+    .filter(Boolean);
+}
+
+function isNetlifyOrigin(origin) {
+  try {
+    const parsed = new URL(normalizeOrigin(origin));
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.netlify.app');
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isLocalDevOrigin(origin) {
+  return origin === 'http://localhost:5173' || origin === 'http://127.0.0.1:5173';
+}
+
+function getClientUrl(req) {
+  const explicitClientUrl = normalizeOrigin(process.env.CLIENT_URL);
+  if (explicitClientUrl) {
+    return explicitClientUrl;
+  }
+
+  const configuredOrigins = parseAllowedOrigins(process.env.CORS_ORIGINS);
+  const requestOrigin = normalizeOrigin(req?.get?.('origin'));
+  if (requestOrigin && (isNetlifyOrigin(requestOrigin) || configuredOrigins.includes(requestOrigin))) {
+    return requestOrigin;
+  }
+
+  const netlifyClientUrl = configuredOrigins.find((origin) => isNetlifyOrigin(origin));
+  if (netlifyClientUrl) {
+    return netlifyClientUrl;
+  }
+
+  const publicClientUrl = configuredOrigins.find((origin) => !isLocalDevOrigin(origin));
+  if (publicClientUrl) {
+    return publicClientUrl;
+  }
+
+  return 'http://localhost:5173';
 }
 
 function normalizeOAuthErrorMessage({ error, errorDescription, fallback }) {
@@ -549,7 +596,7 @@ router.post('/auth/disconnect', handleDisconnect);
 
 router.get('/auth/google/callback', async (req, res) => {
   const { code, error, error_description: errorDescription, state } = req.query;
-  const clientUrl = getClientUrl();
+  const clientUrl = getClientUrl(req);
 
   if (error) {
     return redirectWithOAuthError(res, clientUrl, 'google', {
@@ -610,7 +657,7 @@ router.get('/auth/google/callback', async (req, res) => {
 
 router.get('/auth/microsoft/callback', async (req, res) => {
   const { code, error, error_description: errorDescription, state } = req.query;
-  const clientUrl = getClientUrl();
+  const clientUrl = getClientUrl(req);
 
   if (error) {
     return redirectWithOAuthError(res, clientUrl, 'microsoft', {
