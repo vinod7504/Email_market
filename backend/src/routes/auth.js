@@ -94,9 +94,7 @@ function resolveBackendBaseUrl(req) {
   const envCandidates = [
     process.env.BACKEND_URL,
     process.env.APP_BASE_URL,
-    process.env.RENDER_EXTERNAL_URL,
-    process.env.PUBLIC_BASE_URL,
-    process.env.TRACKING_BASE_URL
+    process.env.RENDER_EXTERNAL_URL
   ]
     .map((candidate) => normalizeOrigin(candidate))
     .filter((candidate) => candidate && isHttpUrl(candidate) && !isLocalhostUrl(candidate));
@@ -361,7 +359,7 @@ router.get('/api/auth/google/url', (req, res) => {
       loginHint: requestedSenderEmail || undefined,
       redirectUri
     });
-    return res.json({ url });
+    return res.json({ url, redirectUri });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Could not create Google OAuth URL.' });
   }
