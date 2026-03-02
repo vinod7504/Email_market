@@ -42,6 +42,15 @@ function parseAllowedOrigins(value) {
     .filter(Boolean);
 }
 
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(normalizeOrigin(value));
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch (_error) {
+    return false;
+  }
+}
+
 function isNetlifyOrigin(origin) {
   try {
     const parsed = new URL(normalizeOrigin(origin));
@@ -81,6 +90,39 @@ function isLocalhostUrl(url) {
   }
 }
 
+function resolveBackendBaseUrl(req) {
+  const envCandidates = [
+    process.env.BACKEND_URL,
+    process.env.APP_BASE_URL,
+    process.env.RENDER_EXTERNAL_URL,
+    process.env.PUBLIC_BASE_URL,
+    process.env.TRACKING_BASE_URL
+  ]
+    .map((candidate) => normalizeOrigin(candidate))
+    .filter((candidate) => candidate && isHttpUrl(candidate) && !isLocalhostUrl(candidate));
+
+  if (envCandidates[0]) {
+    return envCandidates[0];
+  }
+
+  const requestBaseUrl = getRequestBaseUrl(req);
+  if (requestBaseUrl && isHttpUrl(requestBaseUrl) && !isLocalhostUrl(requestBaseUrl)) {
+    return requestBaseUrl;
+  }
+
+  return '';
+}
+
+function isValidGoogleRedirectUri(value) {
+  try {
+    const parsed = new URL(normalizeOrigin(value));
+    const isHttp = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    return isHttp && parsed.pathname === '/auth/google/callback';
+  } catch (_error) {
+    return false;
+  }
+}
+
 function getGoogleRedirectUri(req) {
   const configured = normalizeOrigin(process.env.GOOGLE_REDIRECT_URI);
   const requestBaseUrl = getRequestBaseUrl(req);
@@ -94,8 +136,9 @@ function getGoogleRedirectUri(req) {
     }
   }
 
-  if (requestBaseUrl) {
-    return `${requestBaseUrl}/auth/google/callback`;
+  const backendBaseUrl = resolveBackendBaseUrl(req);
+  if (backendBaseUrl) {
+    return `${backendBaseUrl}/auth/google/callback`;
   }
 
   return configured || '';
@@ -307,8 +350,12 @@ router.get('/api/auth/google/url', (req, res) => {
 
   try {
     const requestedSenderEmail = normalizeEmail(req.query?.senderEmail || req.query?.aliasEmail || '');
-    const state = requestedSenderEmail ? encodeStatePayload({ senderEmail: requestedSenderEmail }) : undefined;
     const redirectUri = getGoogleRedirectUri(req);
+    const statePayload = {
+      senderEmail: requestedSenderEmail || undefined,
+      redirectUri: isValidGoogleRedirectUri(redirectUri) ? redirectUri : undefined
+    };
+    const state = statePayload.senderEmail || statePayload.redirectUri ? encodeStatePayload(statePayload) : undefined;
     const url = getGoogleAuthUrl({
       state,
       loginHint: requestedSenderEmail || undefined,
@@ -645,7 +692,10 @@ router.post('/auth/disconnect', handleDisconnect);
 router.get('/auth/google/callback', async (req, res) => {
   const { code, error, error_description: errorDescription, state } = req.query;
   const clientUrl = getClientUrl(req);
-  const redirectUri = getGoogleRedirectUri(req);
+  const statePayload = decodeStatePayload(state);
+  const requestedSenderEmail = normalizeEmail(statePayload?.senderEmail || '');
+  const redirectUriFromState = normalizeOrigin(statePayload?.redirectUri || '');
+  const redirectUri = isValidGoogleRedirectUri(redirectUriFromState) ? redirectUriFromState : getGoogleRedirectUri(req);
 
   if (error) {
     return redirectWithOAuthError(res, clientUrl, 'google', {
@@ -664,8 +714,6 @@ router.get('/auth/google/callback', async (req, res) => {
 
   try {
     const user = await exchangeCodeForUser(code, { redirectUri });
-    const statePayload = decodeStatePayload(state);
-    const requestedSenderEmail = normalizeEmail(statePayload?.senderEmail || '');
 
     if (requestedSenderEmail && requestedSenderEmail !== user.email) {
       const aliasCheck = await verifyGoogleSenderAlias({
