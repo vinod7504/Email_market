@@ -531,8 +531,8 @@ export default function UploadPage({ flow, onRecipientsReady, appUser, onLogout 
           <div className="card">
             <h3>What Happens Next</h3>
             <p>
-              In template builder, enter subject, body, signature, and check the OpenAI subject spam meter, then send the
-              campaign. App automatically moves you to tracking dashboard.
+              In template builder, enter subject, body, and signature, then send or schedule the campaign. App automatically
+              moves you to tracking dashboard.
             </p>
             {recipientSummary && <div className="notice success">{recipientSummary}</div>}
           </div>

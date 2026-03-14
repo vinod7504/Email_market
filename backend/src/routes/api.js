@@ -17,7 +17,6 @@ const { extractEmailsFromExcelBuffer, buildCampaignRecipientsWorkbookBuffer } = 
 const { calculateSpamScore } = require('../services/spamScore');
 const { hasGoogleConfig } = require('../services/google');
 const { hasMicrosoftConfig } = require('../services/microsoft');
-const { hasOpenAIConfig, analyzeSpamWithOpenAI } = require('../services/openai');
 const { triggerCampaignProcessing } = require('../services/campaignRunner');
 const { notifyEmailOpened } = require('../services/trackingWebhook');
 const { requireAppUser, isAdminUser } = require('../middleware/appAuth');
@@ -98,11 +97,6 @@ function getCampaignScopeForUser(req) {
 }
 
 async function getPublicBaseUrl(req) {
-  const envUrl = process.env.TRACKING_BASE_URL || process.env.PUBLIC_BASE_URL;
-  if (envUrl) {
-    return normalizeUrl(envUrl);
-  }
-
   if (isDatabaseConnected()) {
     const settingUrl = await getSetting('public_base_url');
     if (settingUrl) {
@@ -110,11 +104,16 @@ async function getPublicBaseUrl(req) {
     }
   }
 
+  const envUrl = process.env.TRACKING_BASE_URL || process.env.PUBLIC_BASE_URL;
+  if (envUrl) {
+    return normalizeUrl(envUrl);
+  }
+
   return `${req.protocol}://${req.get('host')}`;
 }
 
 function buildTrackingPixelUrl(baseUrl, campaignId, trackingToken) {
-  return `${baseUrl}/o/webhook-pixel?mid=${encodeURIComponent(campaignId)}&rid=${encodeURIComponent(trackingToken)}`;
+  return `${baseUrl}/track/open/${encodeURIComponent(trackingToken)}.gif?mid=${encodeURIComponent(campaignId)}`;
 }
 
 function parseScheduleDate(value) {
@@ -162,9 +161,9 @@ const AUTOMATED_OPEN_UA_PATTERNS = [
 ];
 
 function getTrackingMinSecondsAfterSend() {
-  const parsed = Number(process.env.OPEN_TRACK_MIN_SECONDS_AFTER_SEND || 5);
+  const parsed = Number(process.env.OPEN_TRACK_MIN_SECONDS_AFTER_SEND || 0);
   if (!Number.isFinite(parsed) || parsed < 0) {
-    return 5;
+    return 0;
   }
 
   return Math.min(Math.round(parsed), 300);
@@ -187,7 +186,7 @@ function detectAutomatedOpenHit(req) {
 
   const userAgent = String(req.get('user-agent') || '').trim();
   if (!userAgent) {
-    return { automated: true, reason: 'missing_user_agent' };
+    return { automated: false, reason: '' };
   }
 
   const matchedPattern = AUTOMATED_OPEN_UA_PATTERNS.find((pattern) => pattern.test(userAgent));
@@ -292,7 +291,6 @@ router.get('/api/config', async (req, res) => {
       hasGoogleConfig: hasGoogleConfig(),
       hasMicrosoftConfig: hasMicrosoftConfig(),
       supportsSmtp: true,
-      hasOpenAIConfig: hasOpenAIConfig(),
       databaseUnavailable: !isDatabaseConnected()
     });
   } catch (error) {
@@ -353,30 +351,6 @@ router.post('/api/tracking/test-webhook', async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Failed to test open tracking webhook.' });
-  }
-});
-
-router.get('/api/spam-score', (req, res) => {
-  const { subject = '', body = '', scope = 'full' } = req.query;
-  const scoreBody = String(scope || '').toLowerCase() === 'subject' ? '' : body;
-  const result = calculateSpamScore(subject, scoreBody);
-  res.json(result);
-});
-
-router.post('/api/ai/spam-meter', async (req, res) => {
-  const { subject = '', body = '', signature = '', scope = 'full' } = req.body || {};
-
-  try {
-    const result = await analyzeSpamWithOpenAI({
-      subject: String(subject || ''),
-      body: String(body || ''),
-      signature: String(signature || ''),
-      scope: String(scope || 'full')
-    });
-
-    return res.json(result);
-  } catch (error) {
-    return res.status(500).json({ error: error.message || 'Failed to analyze spam meter.' });
   }
 });
 
@@ -445,11 +419,7 @@ router.post('/api/campaigns', upload.single('excelFile'), async (req, res) => {
       return res.status(400).json({ error: 'No valid email addresses found in the uploaded sheet.' });
     }
 
-    const spam = await analyzeSpamWithOpenAI({
-      subject,
-      body: bodyText,
-      signature: ''
-    });
+    const spam = calculateSpamScore(subject, bodyText);
     const now = Date.now();
     const scheduleTs = scheduleDate ? new Date(scheduleDate).getTime() : 0;
     const status = scheduleDate && scheduleTs > now ? 'SCHEDULED' : 'QUEUED';
@@ -475,8 +445,7 @@ router.post('/api/campaigns', upload.single('excelFile'), async (req, res) => {
     return res.json({
       ok: true,
       campaign,
-      recipientCount: recipients.length,
-      spam
+      recipientCount: recipients.length
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Failed to create campaign.' });

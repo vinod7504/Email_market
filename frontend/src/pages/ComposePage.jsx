@@ -1,15 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppLayout from '../components/AppLayout';
 import { fetchJson } from '../lib/api';
-
-const EMPTY_SPAM = {
-  score: 0,
-  label: 'Low',
-  reasons: ['Start typing subject/body to calculate spam risk.'],
-  improvements: ['Keep content clear and simple.'],
-  source: 'heuristic'
-};
 
 function Notice({ notice }) {
   if (!notice) {
@@ -18,19 +10,6 @@ function Notice({ notice }) {
 
   const className = notice.type === 'error' ? 'notice error' : notice.type === 'success' ? 'notice success' : 'notice';
   return <div className={className}>{notice.message}</div>;
-}
-
-function spamBadgeClass(label) {
-  const key = String(label || '').toLowerCase();
-  if (key === 'high') {
-    return 'badge badge-high';
-  }
-
-  if (key === 'medium') {
-    return 'badge badge-medium';
-  }
-
-  return 'badge badge-low';
 }
 
 function composeEmailBody(body, signature) {
@@ -211,9 +190,7 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
   const [bodyText, setBodyText] = useState('');
   const [signature, setSignature] = useState('');
   const [scheduleAt, setScheduleAt] = useState('');
-  const [spam, setSpam] = useState(EMPTY_SPAM);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const spamRequestRef = useRef(0);
   const [smtp, setSmtp] = useState({
     email: '',
     password: '',
@@ -264,92 +241,6 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
       setComposeNotice({ type: 'error', message: error.message });
     });
   }, [loadAuth, loadConfig]);
-
-  useEffect(() => {
-    const subject = subjectText.trim();
-    const composedBody = composeEmailBody(bodyText, signature).trim();
-    const requestId = spamRequestRef.current + 1;
-    spamRequestRef.current = requestId;
-
-    if (!subject && !composedBody) {
-      setSpam(EMPTY_SPAM);
-      return undefined;
-    }
-
-    let heuristicApplied = false;
-    let aiApplied = false;
-    const heuristicController = new AbortController();
-    const aiController = new AbortController();
-
-    const heuristicTimer = setTimeout(async () => {
-      try {
-        const params = new URLSearchParams({ subject, body: composedBody, scope: 'full' });
-        const heuristic = await fetchJson(`/api/spam-score?${params.toString()}`, {
-          signal: heuristicController.signal
-        });
-        if (spamRequestRef.current !== requestId || aiApplied) {
-          return;
-        }
-
-        heuristicApplied = true;
-        setSpam({
-          ...heuristic,
-          source: 'heuristic-live'
-        });
-      } catch (error) {
-        if (error?.name === 'AbortError') {
-          return;
-        }
-      }
-    }, 140);
-
-    const aiTimer = setTimeout(async () => {
-      try {
-        const aiResult = await fetchJson('/api/ai/spam-meter', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          signal: aiController.signal,
-          body: JSON.stringify({
-            subject,
-            body: composedBody,
-            signature: '',
-            scope: 'full'
-          })
-        });
-
-        if (spamRequestRef.current !== requestId) {
-          return;
-        }
-
-        aiApplied = true;
-        setSpam(aiResult);
-      } catch (error) {
-        if (error?.name === 'AbortError') {
-          return;
-        }
-
-        if (spamRequestRef.current !== requestId || heuristicApplied) {
-          return;
-        }
-
-        setSpam({
-          ...EMPTY_SPAM,
-          reasons: ['Spam meter unavailable right now.'],
-          improvements: ['Check backend/OpenAI connectivity and try again.'],
-          source: 'unavailable'
-        });
-      }
-    }, 520);
-
-    return () => {
-      clearTimeout(heuristicTimer);
-      clearTimeout(aiTimer);
-      heuristicController.abort();
-      aiController.abort();
-    };
-  }, [subjectText, bodyText, signature]);
 
   const activeAccountBadge = useMemo(() => {
     if (auth.connected && auth.activeAccount) {
@@ -637,10 +528,8 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
     >
       <header className="page-header">
         <div>
-          <h1 className="page-title">Template, Spam Meter & Send</h1>
-          <div className="page-subtitle">
-            Spam meter checks your typed message content. Campaign sends exactly what you entered in subject/body/signature.
-          </div>
+          <h1 className="page-title">Template & Send</h1>
+          <div className="page-subtitle">Campaign sends exactly what you enter in subject, body, and signature.</div>
         </div>
         <div className={activeAccountBadge.className}>{activeAccountBadge.text}</div>
       </header>
@@ -825,7 +714,7 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
 
           <div className="card">
             <h2>Email Content</h2>
-            <p>Enter exact subject/body/signature to send. Paste image/video links in body to auto-render media. Spam meter updates live from your subject and body text.</p>
+            <p>Enter exact subject/body/signature to send. Paste image/video links in body to auto-render media.</p>
 
             {!recipientsAvailable && (
               <div className="notice error">
@@ -879,25 +768,6 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
               value={scheduleAt}
               onChange={(event) => setScheduleAt(event.target.value)}
             />
-
-            <div className="step step-gap">
-              <span className="step-index">AI</span>Message Spam Meter ({spam.source || 'heuristic'})
-            </div>
-            <div className={spamBadgeClass(spam.label)}>
-              {spam.label} Risk · {spam.score}/100
-            </div>
-            <div className="meter">
-              <div className="meter-fill" style={{ width: `${spam.score}%` }} />
-            </div>
-            <small className="muted">{(spam.reasons || []).join(' | ') || 'No issues detected.'}</small>
-
-            {(spam.improvements || []).length > 0 && (
-              <div className="notice">
-                {(spam.improvements || []).map((item, idx) => (
-                  <div key={`${item}-${idx}`}>{item}</div>
-                ))}
-              </div>
-            )}
 
             <div className="inline-actions space-top">
               <button className="btn btn-primary" type="button" disabled={isSubmitting} onClick={handleSendCampaign}>

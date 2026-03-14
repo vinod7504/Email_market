@@ -4,7 +4,6 @@ A MERN-style email marketing app with:
 - Excel recipient upload (`.xlsx` / `.xls`)
 - Sender account connection via Google OAuth or custom SMTP (any domain email)
 - Subject + body composer
-- OpenAI spam meter based on typed subject
 - Campaign scheduling and immediate send
 - Open tracking using pixel URL (works with ngrok/public URL)
 - Dashboard with campaign and recipient statuses
@@ -28,8 +27,6 @@ cp backend/.env.example backend/.env
 Fill `backend/.env` values:
 - `MONGO_URI` (local or Atlas connection string)
 - `CLIENT_URL` (local client: `http://localhost:5173`)
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL` (`gpt-4o-mini` default)
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `GOOGLE_REDIRECT_URI` (local use: `http://localhost:3000/auth/google/callback`)
@@ -93,10 +90,9 @@ Saved URL becomes the base for tracking pixels:
 1. Open upload page and connect sender account first (Google or SMTP).
 2. Upload Excel sheet with recipient emails.
 3. Continue to template page and enter subject, body, signature.
-4. View OpenAI-powered subject spam meter score and reasons.
-5. Click `Send Campaign` (or `Schedule Campaign`) to send the exact subject/body/signature you entered.
-6. App redirects to dashboard automatically.
-7. Track sent/opened status in dashboard and recipient list.
+4. Click `Send Campaign` (or `Schedule Campaign`) to send the exact subject/body/signature you entered.
+5. App redirects to dashboard automatically.
+6. Track sent/opened status in dashboard and recipient list.
 
 ## Notes
 - This app uses one active sender account at a time, but supports switching among connected accounts.

@@ -21,11 +21,11 @@ let isProcessing = false;
 let schedulerHandle = null;
 
 async function getPublicBaseUrl() {
-  const envUrl = process.env.TRACKING_BASE_URL || process.env.PUBLIC_BASE_URL;
   const settingUrl = await getSetting('public_base_url');
+  const envUrl = process.env.TRACKING_BASE_URL || process.env.PUBLIC_BASE_URL;
   const fallback = `http://localhost:${process.env.PORT || 3000}`;
 
-  return String(envUrl || settingUrl || fallback).replace(/\/+$/, '');
+  return String(settingUrl || envUrl || fallback).replace(/\/+$/, '');
 }
 
 function escapeHtml(value) {
@@ -229,7 +229,7 @@ async function sendCampaign(campaign) {
   let latestTokens = account.tokens;
 
   for (const recipient of pendingRecipients) {
-    const trackingUrl = `${baseUrl}/o/webhook-pixel?mid=${encodeURIComponent(campaign.id)}&rid=${encodeURIComponent(recipient.tracking_token)}`;
+    const trackingUrl = `${baseUrl}/track/open/${encodeURIComponent(recipient.tracking_token)}.gif?mid=${encodeURIComponent(campaign.id)}`;
     const htmlBody = buildEmailHtml(campaign.body_text, trackingUrl);
 
     try {
