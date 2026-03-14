@@ -1127,12 +1127,31 @@ async function listCampaigns(options = {}) {
   });
 }
 
-async function listCampaignRecipients(campaignId) {
+async function countCampaignRecipients(campaignId) {
+  if (!isValidId(campaignId)) {
+    return 0;
+  }
+
+  return Recipient.countDocuments({ campaign_id: asObjectId(campaignId) });
+}
+
+async function listCampaignRecipients(campaignId, options = {}) {
   if (!isValidId(campaignId)) {
     return [];
   }
 
-  const rows = await Recipient.find({ campaign_id: asObjectId(campaignId) }).sort({ created_at: 1 }).lean();
+  const parsedPage = Number(options.page || 1);
+  const parsedLimit = Number(options.limit || 0);
+  const page = Number.isFinite(parsedPage) && parsedPage > 0 ? Math.round(parsedPage) : 1;
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(Math.round(parsedLimit), 2000) : 0;
+  const skip = limit > 0 ? (page - 1) * limit : 0;
+
+  let query = Recipient.find({ campaign_id: asObjectId(campaignId) }).sort({ created_at: 1 });
+  if (limit > 0) {
+    query = query.skip(skip).limit(limit);
+  }
+
+  const rows = await query.lean();
   return rows.map(serializeDocument);
 }
 
@@ -1248,6 +1267,7 @@ module.exports = {
   markRecipientFailed,
   finalizeCampaignStatus,
   listCampaigns,
+  countCampaignRecipients,
   listCampaignRecipients,
   markOpenByToken
 };

@@ -17,6 +17,17 @@ function Notice({ notice }) {
   return <div className={className}>{notice.message}</div>;
 }
 
+const RECIPIENTS_PAGE_SIZE = 250;
+
+function truncateText(value, maxLength = 62) {
+  const text = String(value || '').trim();
+  if (!text || text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 3)}...`;
+}
+
 export default function DashboardPage({ appUser, onLogout }) {
   const location = useLocation();
   const [auth, setAuth] = useState({ connected: false, activeAccount: null, activeAccountDetails: null });
@@ -24,6 +35,14 @@ export default function DashboardPage({ appUser, onLogout }) {
   const [selectedCampaignId, setSelectedCampaignId] = useState(null);
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [recipients, setRecipients] = useState([]);
+  const [recipientPagination, setRecipientPagination] = useState({
+    page: 1,
+    limit: RECIPIENTS_PAGE_SIZE,
+    total: 0,
+    totalPages: 1,
+    hasNextPage: false,
+    hasPreviousPage: false
+  });
   const [isExporting, setIsExporting] = useState(false);
   const [notice, setNotice] = useState(null);
   const selectedFromQuery = useMemo(() => {
@@ -31,11 +50,19 @@ export default function DashboardPage({ appUser, onLogout }) {
     return params.get('campaign');
   }, [location.search]);
 
-  const loadRecipients = useCallback(async (campaignId) => {
-    const data = await fetchJson(`/api/campaigns/${campaignId}/recipients`);
+  const loadRecipients = useCallback(async (campaignId, page = 1) => {
+    const data = await fetchJson(`/api/campaigns/${campaignId}/recipients?page=${page}&limit=${RECIPIENTS_PAGE_SIZE}`);
     setSelectedCampaignId(campaignId);
     setSelectedCampaign(data.campaign);
     setRecipients(data.recipients || []);
+    setRecipientPagination({
+      page: Number(data.pagination?.page || 1),
+      limit: Number(data.pagination?.limit || RECIPIENTS_PAGE_SIZE),
+      total: Number(data.pagination?.total || 0),
+      totalPages: Number(data.pagination?.totalPages || 1),
+      hasNextPage: Boolean(data.pagination?.hasNextPage),
+      hasPreviousPage: Boolean(data.pagination?.hasPreviousPage)
+    });
   }, []);
 
   const loadDashboard = useCallback(async () => {
@@ -50,17 +77,25 @@ export default function DashboardPage({ appUser, onLogout }) {
       if (targetCampaignId) {
         const stillExists = nextCampaigns.some((campaign) => campaign.id === targetCampaignId);
         if (stillExists) {
-          await loadRecipients(targetCampaignId);
+          await loadRecipients(targetCampaignId, recipientPagination.page || 1);
         } else {
           setSelectedCampaignId(null);
           setSelectedCampaign(null);
           setRecipients([]);
+          setRecipientPagination({
+            page: 1,
+            limit: RECIPIENTS_PAGE_SIZE,
+            total: 0,
+            totalPages: 1,
+            hasNextPage: false,
+            hasPreviousPage: false
+          });
         }
       }
     } catch (error) {
       setNotice({ type: 'error', message: error.message });
     }
-  }, [loadRecipients, selectedCampaignId, selectedFromQuery]);
+  }, [loadRecipients, recipientPagination.page, selectedCampaignId, selectedFromQuery]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -140,7 +175,19 @@ export default function DashboardPage({ appUser, onLogout }) {
 
   async function handleCampaignSelect(campaignId) {
     try {
-      await loadRecipients(campaignId);
+      await loadRecipients(campaignId, 1);
+    } catch (error) {
+      setNotice({ type: 'error', message: error.message });
+    }
+  }
+
+  async function handleRecipientsPageChange(nextPage) {
+    if (!selectedCampaignId) {
+      return;
+    }
+
+    try {
+      await loadRecipients(selectedCampaignId, nextPage);
     } catch (error) {
       setNotice({ type: 'error', message: error.message });
     }
@@ -363,13 +410,29 @@ export default function DashboardPage({ appUser, onLogout }) {
           <h3>{selectedCampaignSummary ? `Recipients · ${selectedCampaignSummary.name}` : 'Recipients'}</h3>
           <p>
             {selectedCampaignSummary
-              ? `${recipients.length} recipients in this campaign.`
+              ? `Showing ${recipients.length} of ${recipientPagination.total} recipients (page ${recipientPagination.page}/${recipientPagination.totalPages}).`
               : 'Select a campaign to inspect recipient-level delivery/open status.'}
           </p>
           {selectedCampaignSummary && (
             <div className="inline-actions space-top-small">
               <button className="btn btn-secondary" onClick={handleRecipientsExport} type="button" disabled={isExporting}>
                 {isExporting ? 'Preparing Excel...' : 'Download Opened Recipients (.xlsx)'}
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => handleRecipientsPageChange(recipientPagination.page - 1)}
+                disabled={!recipientPagination.hasPreviousPage}
+              >
+                Previous Page
+              </button>
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => handleRecipientsPageChange(recipientPagination.page + 1)}
+                disabled={!recipientPagination.hasNextPage}
+              >
+                Next Page
               </button>
             </div>
           )}
@@ -384,18 +447,19 @@ export default function DashboardPage({ appUser, onLogout }) {
                   <th>Sent At</th>
                   <th>Opened At</th>
                   <th>Open Count</th>
+                  <th>Tracking Pixel</th>
                 </tr>
               </thead>
               <tbody>
                 {!selectedCampaignSummary && (
                   <tr>
-                    <td colSpan="6">No campaign selected.</td>
+                    <td colSpan="7">No campaign selected.</td>
                   </tr>
                 )}
 
                 {selectedCampaignSummary && !recipients.length && (
                   <tr>
-                    <td colSpan="6">No recipients in this campaign.</td>
+                    <td colSpan="7">No recipients in this campaign.</td>
                   </tr>
                 )}
 
@@ -411,6 +475,15 @@ export default function DashboardPage({ appUser, onLogout }) {
                     <td data-label="Sent At">{formatDateTime(recipient.sent_at)}</td>
                     <td data-label="Opened At">{formatDateTime(recipient.opened_at)}</td>
                     <td data-label="Open Count">{Number(recipient.open_count || 0)}</td>
+                    <td data-label="Tracking Pixel">
+                      {recipient.trackingPixelUrl ? (
+                        <a href={`${recipient.trackingPixelUrl}&force_track=1`} target="_blank" rel="noopener noreferrer" title={recipient.trackingPixelUrl}>
+                          {truncateText(recipient.trackingPixelUrl, 48)}
+                        </a>
+                      ) : (
+                        '-'
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

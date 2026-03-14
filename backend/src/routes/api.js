@@ -8,6 +8,7 @@ const {
   getActiveSenderAccount,
   createCampaign,
   listCampaigns,
+  countCampaignRecipients,
   listCampaignRecipients,
   getCampaignById,
   queueCampaignNow,
@@ -74,6 +75,24 @@ function parseOpenedOnly(value) {
   }
 
   return true;
+}
+
+function parseRecipientsPage(value) {
+  const parsed = Number(value || 1);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 1;
+  }
+
+  return Math.min(Math.round(parsed), 100000);
+}
+
+function parseRecipientsLimit(value) {
+  const parsed = Number(value || 250);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 250;
+  }
+
+  return Math.min(Math.round(parsed), 1000);
 }
 
 function getAuthenticatedUser(req) {
@@ -491,6 +510,8 @@ router.get('/api/campaigns/:id/recipients', async (req, res) => {
   }
 
   const campaignId = String(req.params.id || '').trim();
+  const requestedPage = parseRecipientsPage(req.query.page);
+  const limit = parseRecipientsLimit(req.query.limit);
 
   if (!isValidId(campaignId)) {
     return res.status(400).json({ error: 'Invalid campaign id.' });
@@ -503,14 +524,27 @@ router.get('/api/campaigns/:id/recipients', async (req, res) => {
       return res.status(404).json({ error: 'Campaign not found.' });
     }
 
+    const totalRecipients = await countCampaignRecipients(campaignId);
+    const totalPages = Math.max(1, Math.ceil(totalRecipients / limit));
+    const page = Math.min(requestedPage, totalPages);
+
     const baseUrl = await getPublicBaseUrl(req);
-    const recipients = (await listCampaignRecipients(campaignId)).map((recipient) => ({
+    const recipients = (await listCampaignRecipients(campaignId, { page, limit })).map((recipient) => ({
       ...recipient,
       trackingPixelUrl: buildTrackingPixelUrl(baseUrl, campaignId, recipient.tracking_token)
     }));
+
     return res.json({
       campaign,
-      recipients
+      recipients,
+      pagination: {
+        page,
+        limit,
+        total: totalRecipients,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1
+      }
     });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Failed to load recipients.' });

@@ -8,6 +8,8 @@ function normalizeBaseUrl(value) {
 }
 
 const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL);
+const DEFAULT_API_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS || 20000);
+const DEFAULT_GET_RETRY_COUNT = Number(import.meta.env.VITE_API_GET_RETRIES || 2);
 
 function formatBackendHint() {
   return API_BASE_URL || 'http://localhost:3000';
@@ -63,6 +65,28 @@ function buildFailureMessage(status, url, responseText, fallbackMessage) {
   return `Request failed (${status})`;
 }
 
+function normalizeTimeoutMs() {
+  if (!Number.isFinite(DEFAULT_API_TIMEOUT_MS) || DEFAULT_API_TIMEOUT_MS <= 0) {
+    return 20000;
+  }
+
+  return Math.min(Math.round(DEFAULT_API_TIMEOUT_MS), 120000);
+}
+
+function normalizeRetryCount() {
+  if (!Number.isFinite(DEFAULT_GET_RETRY_COUNT) || DEFAULT_GET_RETRY_COUNT < 0) {
+    return 2;
+  }
+
+  return Math.min(Math.round(DEFAULT_GET_RETRY_COUNT), 5);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export async function fetchJson(url, options = {}) {
   const requestUrl = resolveApiUrl(url);
   let response;
@@ -71,12 +95,70 @@ export async function fetchJson(url, options = {}) {
     ...options,
     headers: requestHeaders
   };
+  const requestMethod = String(requestOptions.method || 'GET').toUpperCase();
+  const shouldRetry = requestMethod === 'GET' || requestMethod === 'HEAD';
+  const maxRetries = shouldRetry ? normalizeRetryCount() : 0;
+  const timeoutMs = normalizeTimeoutMs();
+  let lastErrorWasTimeout = false;
+  let lastNetworkError = null;
 
-  try {
-    response = await fetch(requestUrl, requestOptions);
-  } catch (error) {
-    if (error && error.name === 'AbortError') {
-      throw error;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    let timeoutHandle = null;
+    let attemptTimedOut = false;
+    const attemptOptions = {
+      ...requestOptions,
+      headers: withAuthHeaders(options.headers || {})
+    };
+    const timeoutController = !attemptOptions.signal ? new AbortController() : null;
+    if (timeoutController) {
+      attemptOptions.signal = timeoutController.signal;
+      timeoutHandle = setTimeout(() => {
+        attemptTimedOut = true;
+        timeoutController.abort();
+      }, timeoutMs);
+    }
+
+    try {
+      response = await fetch(requestUrl, attemptOptions);
+      lastErrorWasTimeout = false;
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      break;
+    } catch (error) {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+
+      const abortedByCaller = Boolean(options.signal?.aborted);
+      if (abortedByCaller) {
+        throw error;
+      }
+
+      const isAbort = error && error.name === 'AbortError';
+      if (isAbort && !attemptTimedOut) {
+        throw error;
+      }
+
+      lastErrorWasTimeout = attemptTimedOut;
+      lastNetworkError = error;
+      const hasMoreAttempts = attempt < maxRetries;
+      if (!hasMoreAttempts) {
+        break;
+      }
+
+      const backoffMs = Math.min(250 * 2 ** attempt, 1500);
+      await delay(backoffMs);
+    }
+  }
+
+  if (!response) {
+    if (lastErrorWasTimeout) {
+      throw new Error(`Request timed out after ${timeoutMs}ms. Failed endpoint: ${requestUrl}`);
+    }
+
+    if (lastNetworkError && lastNetworkError.name === 'AbortError') {
+      throw lastNetworkError;
     }
 
     throw new Error(`Cannot connect to backend API at ${formatBackendHint()}. Failed endpoint: ${requestUrl}`);
