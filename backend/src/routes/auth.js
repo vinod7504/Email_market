@@ -5,6 +5,7 @@ const {
   getActiveSenderAccount,
   setActiveAccountEmail,
   createAppUser,
+  getAppUserByEmail,
   verifyAppUserCredentials,
   createAppSession,
   revokeAppSession,
@@ -205,6 +206,14 @@ function redirectWithOAuthError(res, clientUrl, provider, payload = {}) {
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isValidUsername(value) {
+  return /^[a-z0-9_]{3,30}$/.test(normalizeUsername(value));
 }
 
 function getConfiguredAdminEmail() {
@@ -432,16 +441,21 @@ function buildUsernameCandidates(email, username, options = {}) {
   return [...new Set(candidates)];
 }
 
-router.post('/api/app-auth/register', async (req, res) => {
+async function handleAppRegister(req, res) {
   if (!isDatabaseConnected()) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
   const email = normalizeEmail(req.body?.email);
+  const username = normalizeUsername(req.body?.username || req.body?.userName || req.body?.user_name);
   const password = String(req.body?.password || '');
 
   if (!email || !email.includes('@')) {
     return res.status(400).json({ error: 'Valid email is required.' });
+  }
+
+  if (!isValidUsername(username)) {
+    return res.status(400).json({ error: 'Username must be 3-30 chars using letters, numbers, or underscore.' });
   }
 
   if (email === getConfiguredAdminEmail()) {
@@ -455,6 +469,7 @@ router.post('/api/app-auth/register', async (req, res) => {
   try {
     await createAppUser({
       email,
+      username,
       password,
       role: 'user'
     });
@@ -464,25 +479,44 @@ router.post('/api/app-auth/register', async (req, res) => {
       message: 'Account created successfully. Please login.'
     });
   } catch (error) {
+    if (Number(error?.code) === 11000) {
+      const keys = Object.keys(error?.keyPattern || {});
+      if (keys.includes('username')) {
+        return res.status(409).json({ error: 'Username is already taken.' });
+      }
+
+      return res.status(409).json({ error: 'An account already exists for this email.' });
+    }
+
     const message = String(error?.message || '').toLowerCase();
+    if (message.includes('username is already taken')) {
+      return res.status(409).json({ error: 'Username is already taken.' });
+    }
+
     if (message.includes('already exists')) {
       return res.status(409).json({ error: 'An account already exists for this email.' });
     }
 
     return res.status(500).json({ error: error.message || 'Failed to create account.' });
   }
-});
+}
 
-router.post('/api/app-auth/login', async (req, res) => {
+async function handleAppLogin(req, res) {
   if (!isDatabaseConnected()) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
-  const email = normalizeEmail(req.body?.email);
+  const loginInput = String(req.body?.login || req.body?.email || req.body?.username || '').trim();
+  const normalizedEmail = normalizeEmail(loginInput);
+  const normalizedUsername = normalizeUsername(loginInput);
   const password = String(req.body?.password || '');
 
-  if (!email || !email.includes('@')) {
-    return res.status(400).json({ error: 'Valid email is required.' });
+  if (!loginInput) {
+    return res.status(400).json({ error: 'Email or username is required.' });
+  }
+
+  if (!loginInput.includes('@') && !isValidUsername(loginInput)) {
+    return res.status(400).json({ error: 'Enter a valid email or username.' });
   }
 
   if (!password) {
@@ -491,13 +525,14 @@ router.post('/api/app-auth/login', async (req, res) => {
 
   try {
     let user = null;
-    if (isConfiguredAdminCredential(email, password)) {
+    if (normalizedEmail && isConfiguredAdminCredential(normalizedEmail, password)) {
       user = {
         email: getConfiguredAdminEmail(),
+        username: 'admin',
         role: 'admin'
       };
     } else {
-      user = await verifyAppUserCredentials(email, password);
+      user = await verifyAppUserCredentials(loginInput, password);
     }
 
     if (!user) {
@@ -516,6 +551,7 @@ router.post('/api/app-auth/login', async (req, res) => {
       expiresAt: session.expiresAt,
       user: {
         email: user.email,
+        username: user.username || normalizedUsername,
         role: user.role,
         isAdmin: user.role === 'admin'
       }
@@ -523,27 +559,46 @@ router.post('/api/app-auth/login', async (req, res) => {
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Failed to login.' });
   }
-});
+}
 
-router.get('/api/app-auth/me', requireAppUser, (req, res) => {
-  const user = getAuthenticatedUser(req);
-  return res.json({
-    user: {
-      email: user.email,
-      role: user.role,
-      isAdmin: user.isAdmin
+async function handleAppMe(req, res) {
+  try {
+    const user = getAuthenticatedUser(req);
+    let username = '';
+
+    if (user.isAdmin) {
+      username = 'admin';
+    } else {
+      const dbUser = await getAppUserByEmail(user.email);
+      username = String(dbUser?.username || '');
     }
-  });
-});
 
-router.post('/api/app-auth/logout', requireAppUser, async (req, res) => {
+    return res.json({
+      user: {
+        email: user.email,
+        username,
+        role: user.role,
+        isAdmin: user.isAdmin
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Failed to load current user.' });
+  }
+}
+
+async function handleAppLogout(req, res) {
   try {
     await revokeAppSession(req.appAuthToken);
     return res.json({ ok: true });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Failed to logout.' });
   }
-});
+}
+
+router.post(['/api/app-auth/register', '/app-auth/register'], handleAppRegister);
+router.post(['/api/app-auth/login', '/app-auth/login'], handleAppLogin);
+router.get(['/api/app-auth/me', '/app-auth/me'], requireAppUser, handleAppMe);
+router.post(['/api/app-auth/logout', '/app-auth/logout'], requireAppUser, handleAppLogout);
 
 router.get('/api/auth/status', requireAppUser, async (req, res) => {
   if (!isDatabaseConnected()) {

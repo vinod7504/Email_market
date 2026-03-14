@@ -27,6 +27,7 @@ export function readStoredSession() {
       expiresAt: parsed?.expiresAt || null,
       user: {
         email: userEmail,
+        username: String(parsed?.user?.username || '').trim().toLowerCase(),
         role: String(parsed?.user?.role || 'user').toLowerCase() === 'admin' ? 'admin' : 'user',
         isAdmin: Boolean(parsed?.user?.isAdmin || String(parsed?.user?.role || '').toLowerCase() === 'admin')
       }
@@ -53,6 +54,7 @@ export function saveSession(session) {
       expiresAt: session.expiresAt || null,
       user: {
         email: String(session.user.email || '').toLowerCase(),
+        username: String(session.user.username || '').toLowerCase(),
         role: String(session.user.role || 'user').toLowerCase() === 'admin' ? 'admin' : 'user',
         isAdmin: Boolean(session.user.isAdmin)
       }

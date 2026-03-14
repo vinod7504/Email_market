@@ -106,6 +106,7 @@ const recipientSchema = new Schema(
 const appUserSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, index: true },
+    username: { type: String, unique: true, sparse: true, index: true },
     password_hash: { type: String, required: true },
     role: { type: String, required: true, default: 'user' },
     created_at: { type: Date, required: true },
@@ -147,6 +148,10 @@ function nowDate() {
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
+}
+
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
 }
 
 function normalizeRole(role) {
@@ -318,6 +323,7 @@ async function clearActiveAccountEmail(userEmail = '') {
 
 async function createAppUser(payload = {}) {
   const email = normalizeEmail(payload.email);
+  const username = normalizeUsername(payload.username);
   const password = String(payload.password || '');
   const role = normalizeRole(payload.role || 'user');
 
@@ -325,18 +331,28 @@ async function createAppUser(payload = {}) {
     throw new Error('Email is required.');
   }
 
+  if (!username) {
+    throw new Error('Username is required.');
+  }
+
   if (!password) {
     throw new Error('Password is required.');
   }
 
-  const existing = await AppUser.findOne({ email }).lean();
-  if (existing) {
+  const existingEmail = await AppUser.findOne({ email }).lean();
+  if (existingEmail) {
     throw new Error('User already exists for this email.');
+  }
+
+  const existingUsername = await AppUser.findOne({ username }).lean();
+  if (existingUsername) {
+    throw new Error('Username is already taken.');
   }
 
   const now = nowDate();
   await AppUser.create({
     email,
+    username,
     password_hash: hashPassword(password),
     role,
     created_at: now,
@@ -346,6 +362,7 @@ async function createAppUser(payload = {}) {
 
   return {
     email,
+    username,
     role
   };
 }
@@ -363,6 +380,7 @@ async function getAppUserByEmail(email) {
 
   return {
     email: row.email,
+    username: String(row.username || ''),
     role: normalizeRole(row.role),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -370,19 +388,26 @@ async function getAppUserByEmail(email) {
   };
 }
 
-async function verifyAppUserCredentials(email, password) {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail || !password) {
+async function verifyAppUserCredentials(identifier, password) {
+  const loginValue = String(identifier || '').trim();
+  if (!loginValue || !password) {
     return null;
   }
 
-  const row = await AppUser.findOne({ email: normalizedEmail }).lean();
+  const isEmailLogin = loginValue.includes('@');
+  const normalizedValue = isEmailLogin ? normalizeEmail(loginValue) : normalizeUsername(loginValue);
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const row = await AppUser.findOne(isEmailLogin ? { email: normalizedValue } : { username: normalizedValue }).lean();
   if (!row || !verifyPasswordHash(password, row.password_hash)) {
     return null;
   }
 
   return {
     email: row.email,
+    username: String(row.username || ''),
     role: normalizeRole(row.role)
   };
 }

@@ -12,7 +12,9 @@ function Notice({ notice }) {
 
 export default function LoginPage({ onLogin }) {
   const [mode, setMode] = useState('login');
+  const [loginValue, setLoginValue] = useState('');
   const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [notice, setNotice] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -26,6 +28,31 @@ export default function LoginPage({ onLogin }) {
     [mode]
   );
 
+  async function postAuth(primaryPath, fallbackPath, payload) {
+    try {
+      return await fetchJson(primaryPath, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      const message = String(error?.message || '').toLowerCase();
+      if (!message.includes('cannot post')) {
+        throw error;
+      }
+
+      return fetchJson(fallbackPath, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
     setNotice(null);
@@ -33,32 +60,24 @@ export default function LoginPage({ onLogin }) {
 
     try {
       if (mode === 'register') {
-        const response = await fetchJson('/api/app-auth/register', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            email: String(email || '').trim().toLowerCase(),
-            password: String(password || '')
-          })
+        const response = await postAuth('/api/app-auth/register', '/app-auth/register', {
+          email: String(email || '').trim().toLowerCase(),
+          username: String(username || '').trim().toLowerCase(),
+          password: String(password || '')
         });
 
         setNotice({ type: 'success', message: response.message || 'Account created. Please login now.' });
         setMode('login');
+        setLoginValue(String(email || '').trim().toLowerCase());
         setPassword('');
         return;
       }
 
-      const result = await fetchJson('/api/app-auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          email: String(email || '').trim().toLowerCase(),
-          password: String(password || '')
-        })
+      const result = await postAuth('/api/app-auth/login', '/app-auth/login', {
+        login: String(loginValue || '').trim().toLowerCase(),
+        email: String(loginValue || '').trim().toLowerCase(),
+        username: String(loginValue || '').trim().toLowerCase(),
+        password: String(password || '')
       });
 
       onLogin({
@@ -81,16 +100,44 @@ export default function LoginPage({ onLogin }) {
         <p className="auth-subtitle">{subtitle}</p>
 
         <form className="auth-form" onSubmit={handleSubmit}>
-          <label htmlFor="auth-email">Email</label>
-          <input
-            id="auth-email"
-            type="email"
-            required
-            autoComplete="username"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@company.com"
-          />
+          {mode === 'login' ? (
+            <>
+              <label htmlFor="auth-login">Email or Username</label>
+              <input
+                id="auth-login"
+                type="text"
+                required
+                autoComplete="username"
+                value={loginValue}
+                onChange={(event) => setLoginValue(event.target.value)}
+                placeholder="you@company.com or vinod_user"
+              />
+            </>
+          ) : (
+            <>
+              <label htmlFor="auth-email">Email</label>
+              <input
+                id="auth-email"
+                type="email"
+                required
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@company.com"
+              />
+
+              <label htmlFor="auth-username">Username</label>
+              <input
+                id="auth-username"
+                type="text"
+                required
+                autoComplete="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="letters, numbers, underscore"
+              />
+            </>
+          )}
 
           <label htmlFor="auth-password">Password</label>
           <input
@@ -115,6 +162,7 @@ export default function LoginPage({ onLogin }) {
             onClick={() => {
               setMode((current) => (current === 'login' ? 'register' : 'login'));
               setNotice(null);
+              setPassword('');
             }}
           >
             {mode === 'login' ? 'Create User Account' : 'Back to Login'}
