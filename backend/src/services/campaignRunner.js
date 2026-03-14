@@ -229,7 +229,8 @@ async function sendCampaign(campaign) {
   let latestTokens = account.tokens;
 
   for (const recipient of pendingRecipients) {
-    const trackingUrl = `${baseUrl}/track/open/${encodeURIComponent(recipient.tracking_token)}.gif?mid=${encodeURIComponent(campaign.id)}`;
+    const encodedToken = encodeURIComponent(recipient.tracking_token);
+    const trackingUrl = `${baseUrl}/track/open/${encodedToken}.gif?mid=${encodeURIComponent(campaign.id)}&rid=${encodedToken}`;
     const htmlBody = buildEmailHtml(campaign.body_text, trackingUrl);
 
     try {

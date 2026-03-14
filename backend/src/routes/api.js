@@ -113,7 +113,8 @@ async function getPublicBaseUrl(req) {
 }
 
 function buildTrackingPixelUrl(baseUrl, campaignId, trackingToken) {
-  return `${baseUrl}/track/open/${encodeURIComponent(trackingToken)}.gif?mid=${encodeURIComponent(campaignId)}`;
+  const token = encodeURIComponent(trackingToken);
+  return `${baseUrl}/track/open/${token}.gif?mid=${encodeURIComponent(campaignId)}&rid=${token}`;
 }
 
 function parseScheduleDate(value) {
@@ -273,8 +274,26 @@ function sendTrackingGif(res, options = {}) {
   res.status(200).send(transparentGif);
 }
 
+function extractTrackingToken(req) {
+  const directToken = String(req.params.token || req.query.rid || req.query.token || '').trim();
+  if (directToken) {
+    return directToken;
+  }
+
+  const pathTokenMatch = String(req.path || '').match(/\/track\/open\/([^/?#]+?)(?:\.gif)?$/i);
+  if (!pathTokenMatch?.[1]) {
+    return '';
+  }
+
+  try {
+    return decodeURIComponent(pathTokenMatch[1]).trim();
+  } catch (_error) {
+    return String(pathTokenMatch[1] || '').trim();
+  }
+}
+
 async function handlePixelHit(req, res) {
-  const token = String(req.params.token || req.query.rid || req.query.token || '').trim();
+  const token = extractTrackingToken(req);
   const forceTrack = ['1', 'true', 'yes'].includes(String(req.query.force_track || '').trim().toLowerCase());
   const automatedCheck = detectAutomatedOpenHit(req);
   await processOpenTracking(req, token, {
@@ -571,6 +590,22 @@ router.get('/track/open/:token.gif', async (req, res) => {
 });
 
 router.head('/track/open/:token.gif', async (req, res) => {
+  await handlePixelHit(req, res);
+});
+
+router.get('/track/open/:token', async (req, res) => {
+  await handlePixelHit(req, res);
+});
+
+router.head('/track/open/:token', async (req, res) => {
+  await handlePixelHit(req, res);
+});
+
+router.get('/track/open', async (req, res) => {
+  await handlePixelHit(req, res);
+});
+
+router.head('/track/open', async (req, res) => {
   await handlePixelHit(req, res);
 });
 
