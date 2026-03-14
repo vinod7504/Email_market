@@ -1,3 +1,4 @@
+import { clearSession, getSessionToken } from './session';
 const DEFAULT_API_BASE_URL = 'https://email-market-rkeb.onrender.com';
 
 function normalizeBaseUrl(value) {
@@ -33,6 +34,16 @@ export function resolveApiUrl(url) {
   return `${API_BASE_URL}${rawUrl}`;
 }
 
+export function withAuthHeaders(headers = {}) {
+  const nextHeaders = new Headers(headers);
+  const token = getSessionToken();
+  if (token && !nextHeaders.has('Authorization')) {
+    nextHeaders.set('Authorization', `Bearer ${token}`);
+  }
+
+  return nextHeaders;
+}
+
 function buildFailureMessage(status, url, responseText, fallbackMessage) {
   const normalizedText = String(responseText || '').toLowerCase();
   const proxyDown =
@@ -55,9 +66,14 @@ function buildFailureMessage(status, url, responseText, fallbackMessage) {
 export async function fetchJson(url, options = {}) {
   const requestUrl = resolveApiUrl(url);
   let response;
+  const requestHeaders = withAuthHeaders(options.headers || {});
+  const requestOptions = {
+    ...options,
+    headers: requestHeaders
+  };
 
   try {
-    response = await fetch(requestUrl, options);
+    response = await fetch(requestUrl, requestOptions);
   } catch (error) {
     if (error && error.name === 'AbortError') {
       throw error;
@@ -77,6 +93,16 @@ export async function fetchJson(url, options = {}) {
   }
 
   if (!response.ok) {
+    if (response.status === 401) {
+      clearSession();
+      if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+        window.location.replace('/login');
+      }
+      const unauthorizedError = new Error(payload?.error || textPayload || 'Login required.');
+      unauthorizedError.code = 'UNAUTHORIZED';
+      throw unauthorizedError;
+    }
+
     throw new Error(
       buildFailureMessage(response.status, requestUrl, textPayload || payload?.error, payload?.error || textPayload || '')
     );

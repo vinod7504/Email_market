@@ -12,7 +12,7 @@ function Notice({ notice }) {
   return <div className={className}>{notice.message}</div>;
 }
 
-export default function UploadPage({ flow, onRecipientsReady }) {
+export default function UploadPage({ flow, onRecipientsReady, appUser, onLogout }) {
   const navigate = useNavigate();
   const [auth, setAuth] = useState({
     connected: false,
@@ -321,7 +321,11 @@ export default function UploadPage({ flow, onRecipientsReady }) {
   }
 
   return (
-    <AppLayout caption="Step 1: Connect sender account (Google or SMTP credentials). Step 2: Upload Excel recipients. Step 3: Build template and send campaign.">
+    <AppLayout
+      caption="Step 1: Connect sender account (Google or SMTP credentials). Step 2: Upload Excel recipients. Step 3: Build template and send campaign."
+      user={appUser}
+      onLogout={onLogout}
+    >
       <header className="page-header">
         <div>
           <h1 className="page-title">Connect Sender & Upload Recipients</h1>

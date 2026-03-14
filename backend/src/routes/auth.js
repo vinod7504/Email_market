@@ -4,6 +4,10 @@ const {
   getActiveAccountEmail,
   getActiveSenderAccount,
   setActiveAccountEmail,
+  createAppUser,
+  verifyAppUserCredentials,
+  createAppSession,
+  revokeAppSession,
   saveGoogleAccount,
   saveMicrosoftAccount,
   saveSmtpAccount,
@@ -13,6 +17,7 @@ const {
   getConnectedAccount,
   disconnectConnectedAccount
 } = require('../db');
+const { requireAppUser, isAdminUser } = require('../middleware/appAuth');
 const {
   hasGoogleConfig,
   getGoogleAuthUrl,
@@ -200,6 +205,43 @@ function redirectWithOAuthError(res, clientUrl, provider, payload = {}) {
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function getConfiguredAdminEmail() {
+  return normalizeEmail(process.env.APP_ADMIN_EMAIL || 'vinodkumarjntua@gmail.com');
+}
+
+function getConfiguredAdminPassword() {
+  return String(process.env.APP_ADMIN_PASSWORD || 'Vinod@2004');
+}
+
+function isConfiguredAdminCredential(email, password) {
+  return normalizeEmail(email) === getConfiguredAdminEmail() && String(password || '') === getConfiguredAdminPassword();
+}
+
+function getAuthenticatedUser(req) {
+  const user = req.appUser || null;
+  if (!user || !user.email) {
+    return null;
+  }
+
+  return {
+    email: normalizeEmail(user.email),
+    role: isAdminUser(user) ? 'admin' : 'user',
+    isAdmin: isAdminUser(user)
+  };
+}
+
+function canManageEmail(reqUser, targetEmail) {
+  if (!reqUser || !targetEmail) {
+    return false;
+  }
+
+  if (reqUser.isAdmin) {
+    return true;
+  }
+
+  return normalizeEmail(reqUser.email) === normalizeEmail(targetEmail);
 }
 
 function getBodyValue(body, keys = []) {
@@ -390,7 +432,120 @@ function buildUsernameCandidates(email, username, options = {}) {
   return [...new Set(candidates)];
 }
 
-router.get('/api/auth/status', async (_req, res) => {
+router.post('/api/app-auth/register', async (req, res) => {
+  if (!isDatabaseConnected()) {
+    return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
+  }
+
+  const email = normalizeEmail(req.body?.email);
+  const password = String(req.body?.password || '');
+
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ error: 'Valid email is required.' });
+  }
+
+  if (email === getConfiguredAdminEmail()) {
+    return res.status(400).json({ error: 'Admin account cannot be registered from this form.' });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must contain at least 6 characters.' });
+  }
+
+  try {
+    await createAppUser({
+      email,
+      password,
+      role: 'user'
+    });
+
+    return res.json({
+      ok: true,
+      message: 'Account created successfully. Please login.'
+    });
+  } catch (error) {
+    const message = String(error?.message || '').toLowerCase();
+    if (message.includes('already exists')) {
+      return res.status(409).json({ error: 'An account already exists for this email.' });
+    }
+
+    return res.status(500).json({ error: error.message || 'Failed to create account.' });
+  }
+});
+
+router.post('/api/app-auth/login', async (req, res) => {
+  if (!isDatabaseConnected()) {
+    return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
+  }
+
+  const email = normalizeEmail(req.body?.email);
+  const password = String(req.body?.password || '');
+
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({ error: 'Valid email is required.' });
+  }
+
+  if (!password) {
+    return res.status(400).json({ error: 'Password is required.' });
+  }
+
+  try {
+    let user = null;
+    if (isConfiguredAdminCredential(email, password)) {
+      user = {
+        email: getConfiguredAdminEmail(),
+        role: 'admin'
+      };
+    } else {
+      user = await verifyAppUserCredentials(email, password);
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const session = await createAppSession({
+      email: user.email,
+      role: user.role,
+      ttlDays: 7
+    });
+
+    return res.json({
+      ok: true,
+      token: session.token,
+      expiresAt: session.expiresAt,
+      user: {
+        email: user.email,
+        role: user.role,
+        isAdmin: user.role === 'admin'
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Failed to login.' });
+  }
+});
+
+router.get('/api/app-auth/me', requireAppUser, (req, res) => {
+  const user = getAuthenticatedUser(req);
+  return res.json({
+    user: {
+      email: user.email,
+      role: user.role,
+      isAdmin: user.isAdmin
+    }
+  });
+});
+
+router.post('/api/app-auth/logout', requireAppUser, async (req, res) => {
+  try {
+    await revokeAppSession(req.appAuthToken);
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || 'Failed to logout.' });
+  }
+});
+
+router.get('/api/auth/status', requireAppUser, async (req, res) => {
   if (!isDatabaseConnected()) {
     return res.json({
       connected: false,
@@ -405,13 +560,26 @@ router.get('/api/auth/status', async (_req, res) => {
   }
 
   try {
-    const [activeAccount, accounts] = await Promise.all([getActiveSenderAccount(), listConnectedAccounts()]);
+    const user = getAuthenticatedUser(req);
+    const scope = {
+      ownerEmail: user.email,
+      includeAll: user.isAdmin
+    };
+    const [activeAccount, accounts] = await Promise.all([
+      getActiveSenderAccount(user.email, { includeAll: scope.includeAll }),
+      listConnectedAccounts(scope)
+    ]);
 
     res.json({
       connected: Boolean(activeAccount?.email),
       activeAccount: activeAccount?.email || null,
       activeAccountDetails: activeAccount ? { email: activeAccount.email, provider: activeAccount.provider } : null,
       accounts,
+      appUser: {
+        email: user.email,
+        role: user.role,
+        isAdmin: user.isAdmin
+      },
       hasGoogleConfig: hasGoogleConfig(),
       hasMicrosoftConfig: hasMicrosoftConfig(),
       supportsSmtp: true
@@ -421,7 +589,7 @@ router.get('/api/auth/status', async (_req, res) => {
   }
 });
 
-router.get('/api/auth/google/url', (req, res) => {
+router.get('/api/auth/google/url', requireAppUser, (req, res) => {
   if (!hasGoogleConfig()) {
     return res.status(400).json({
       error: 'Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env.'
@@ -429,11 +597,21 @@ router.get('/api/auth/google/url', (req, res) => {
   }
 
   try {
-    const requestedSenderEmail = normalizeEmail(req.query?.senderEmail || req.query?.aliasEmail || '');
+    const user = getAuthenticatedUser(req);
+    let requestedSenderEmail = normalizeEmail(req.query?.senderEmail || req.query?.aliasEmail || '');
+    if (!user.isAdmin) {
+      requestedSenderEmail = user.email;
+    }
+
+    if (requestedSenderEmail && !canManageEmail(user, requestedSenderEmail)) {
+      return res.status(403).json({ error: 'You can only connect sender accounts for your own login.' });
+    }
+
     const redirectUri = getGoogleRedirectUri(req);
     const statePayload = {
       senderEmail: requestedSenderEmail || undefined,
-      redirectUri: isValidGoogleRedirectUri(redirectUri) ? redirectUri : undefined
+      redirectUri: isValidGoogleRedirectUri(redirectUri) ? redirectUri : undefined,
+      appUserEmail: user.email || undefined
     };
     const state = statePayload.senderEmail || statePayload.redirectUri ? encodeStatePayload(statePayload) : undefined;
     const url = getGoogleAuthUrl({
@@ -447,7 +625,7 @@ router.get('/api/auth/google/url', (req, res) => {
   }
 });
 
-router.get('/api/auth/microsoft/url', (_req, res) => {
+router.get('/api/auth/microsoft/url', requireAppUser, (_req, res) => {
   if (!hasMicrosoftConfig()) {
     return res.status(400).json({
       error:
@@ -463,11 +641,12 @@ router.get('/api/auth/microsoft/url', (_req, res) => {
   }
 });
 
-router.post('/api/auth/smtp/connect', async (req, res) => {
+router.post('/api/auth/smtp/connect', requireAppUser, async (req, res) => {
   if (!isDatabaseConnected()) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
+  const user = getAuthenticatedUser(req);
   const body = req.body || {};
   const email = normalizeEmail(getBodyValue(body, ['email', 'Email', 'senderEmail', 'SenderEmail', 'fromEmail', 'from_email']));
   const host = String(
@@ -491,6 +670,10 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
 
   if (!password) {
     return res.status(400).json({ error: 'SMTP password/app password is required.' });
+  }
+
+  if (!canManageEmail(user, email)) {
+    return res.status(403).json({ error: 'You can only connect sender accounts for your own login.' });
   }
 
   try {
@@ -613,8 +796,11 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
       fromName
     });
 
-    await setActiveAccountEmail(account.email);
-    const accounts = await listConnectedAccounts();
+    await setActiveAccountEmail(account.email, user.email);
+    const accounts = await listConnectedAccounts({
+      ownerEmail: user.email,
+      includeAll: user.isAdmin
+    });
 
     return res.json({
       ok: true,
@@ -669,11 +855,12 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
   }
 });
 
-router.post('/api/auth/smtp/add-alias', async (req, res) => {
+router.post('/api/auth/smtp/add-alias', requireAppUser, async (req, res) => {
   if (!isDatabaseConnected()) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
+  const appUser = getAuthenticatedUser(req);
   const aliasEmail = normalizeEmail(req.body?.aliasEmail);
   const baseAccountEmail = normalizeEmail(req.body?.baseAccountEmail);
   const fromName = String(req.body?.fromName || '').trim();
@@ -682,25 +869,38 @@ router.post('/api/auth/smtp/add-alias', async (req, res) => {
     return res.status(400).json({ error: 'Valid aliasEmail is required.' });
   }
 
+  if (!canManageEmail(appUser, aliasEmail)) {
+    return res.status(403).json({ error: 'You can only manage sender accounts for your own login.' });
+  }
+
   try {
     let baseSmtpAccount = null;
 
     if (baseAccountEmail) {
+      if (!canManageEmail(appUser, baseAccountEmail)) {
+        return res.status(403).json({ error: 'Base SMTP account is outside your login scope.' });
+      }
       baseSmtpAccount = await getSmtpAccount(baseAccountEmail);
       if (!baseSmtpAccount) {
         return res.status(404).json({ error: `Base SMTP account not found: ${baseAccountEmail}` });
       }
     } else {
-      const activeEmail = await getActiveAccountEmail();
+      const activeEmail = await getActiveAccountEmail(appUser.email);
       if (activeEmail) {
-        const activeAccount = await getConnectedAccount(activeEmail);
+        const activeAccount = await getConnectedAccount(activeEmail, {
+          ownerEmail: appUser.email,
+          includeAll: appUser.isAdmin
+        });
         if (activeAccount?.provider === 'smtp') {
           baseSmtpAccount = await getSmtpAccount(activeEmail);
         }
       }
 
       if (!baseSmtpAccount) {
-        const smtpAccounts = await listSmtpAccounts();
+        const smtpAccounts = await listSmtpAccounts({
+          ownerEmail: appUser.email,
+          includeAll: appUser.isAdmin
+        });
         if (smtpAccounts.length > 0) {
           baseSmtpAccount = await getSmtpAccount(smtpAccounts[0].email);
         }
@@ -724,8 +924,11 @@ router.post('/api/auth/smtp/add-alias', async (req, res) => {
       fromName: fromName || baseSmtpAccount.from_name || ''
     });
 
-    await setActiveAccountEmail(account.email);
-    const accounts = await listConnectedAccounts();
+    await setActiveAccountEmail(account.email, appUser.email);
+    const accounts = await listConnectedAccounts({
+      ownerEmail: appUser.email,
+      includeAll: appUser.isAdmin
+    });
 
     return res.json({
       ok: true,
@@ -742,11 +945,12 @@ router.post('/api/auth/smtp/add-alias', async (req, res) => {
   }
 });
 
-router.post('/api/auth/select-account', async (req, res) => {
+router.post('/api/auth/select-account', requireAppUser, async (req, res) => {
   if (!isDatabaseConnected()) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
+  const appUser = getAuthenticatedUser(req);
   const { email } = req.body || {};
 
   if (!email) {
@@ -754,12 +958,15 @@ router.post('/api/auth/select-account', async (req, res) => {
   }
 
   try {
-    const account = await getConnectedAccount(normalizeEmail(email));
+    const account = await getConnectedAccount(normalizeEmail(email), {
+      ownerEmail: appUser.email,
+      includeAll: appUser.isAdmin
+    });
     if (!account) {
       return res.status(404).json({ error: 'Account not found.' });
     }
 
-    await setActiveAccountEmail(account.email);
+    await setActiveAccountEmail(account.email, appUser.email);
     return res.json({ ok: true, activeAccount: account.email, activeProvider: account.provider });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Failed to change account.' });
@@ -771,17 +978,24 @@ async function handleDisconnect(req, res) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
+  const appUser = getAuthenticatedUser(req);
   const email = String(req.body?.email || '').trim().toLowerCase();
 
   try {
-    const targetEmail = email || (await getActiveAccountEmail()) || '';
+    const targetEmail = email || (await getActiveAccountEmail(appUser.email)) || '';
     if (!targetEmail) {
       return res.status(400).json({ error: 'No connected account to disconnect.' });
     }
 
-    const result = await disconnectConnectedAccount(targetEmail);
-    const accounts = await listConnectedAccounts();
-    const activeAccount = await getActiveSenderAccount();
+    const result = await disconnectConnectedAccount(targetEmail, appUser.email, {
+      includeAll: appUser.isAdmin
+    });
+    const scope = {
+      ownerEmail: appUser.email,
+      includeAll: appUser.isAdmin
+    };
+    const accounts = await listConnectedAccounts(scope);
+    const activeAccount = await getActiveSenderAccount(appUser.email, { includeAll: appUser.isAdmin });
 
     return res.json({
       ok: true,
@@ -796,14 +1010,15 @@ async function handleDisconnect(req, res) {
   }
 }
 
-router.post('/api/auth/disconnect', handleDisconnect);
-router.post('/auth/disconnect', handleDisconnect);
+router.post('/api/auth/disconnect', requireAppUser, handleDisconnect);
+router.post('/auth/disconnect', requireAppUser, handleDisconnect);
 
 router.get('/auth/google/callback', async (req, res) => {
   const { code, error, error_description: errorDescription, state } = req.query;
   const clientUrl = getClientUrl(req);
   const statePayload = decodeStatePayload(state);
   const requestedSenderEmail = normalizeEmail(statePayload?.senderEmail || '');
+  const appUserEmailFromState = normalizeEmail(statePayload?.appUserEmail || '');
   const redirectUriFromState = normalizeOrigin(statePayload?.redirectUri || '');
   const redirectUri = isValidGoogleRedirectUri(redirectUriFromState) ? redirectUriFromState : getGoogleRedirectUri(req);
 
@@ -824,6 +1039,7 @@ router.get('/auth/google/callback', async (req, res) => {
 
   try {
     const user = await exchangeCodeForUser(code, { redirectUri });
+    const appUserEmail = appUserEmailFromState || requestedSenderEmail || user.email;
 
     if (requestedSenderEmail && requestedSenderEmail !== user.email) {
       const aliasCheck = await verifyGoogleSenderAlias({
@@ -846,9 +1062,9 @@ router.get('/auth/google/callback', async (req, res) => {
     await saveGoogleAccount(user.email, user.tokens);
     if (requestedSenderEmail) {
       await saveGoogleAccount(requestedSenderEmail, user.tokens);
-      await setActiveAccountEmail(requestedSenderEmail);
+      await setActiveAccountEmail(requestedSenderEmail, appUserEmail);
     } else {
-      await setActiveAccountEmail(user.email);
+      await setActiveAccountEmail(user.email, appUserEmail);
     }
 
     return res.redirect(
@@ -890,7 +1106,7 @@ router.get('/auth/microsoft/callback', async (req, res) => {
   try {
     const user = await exchangeMicrosoftCodeForUser(code, state);
     await saveMicrosoftAccount(user.email, user.tokens);
-    await setActiveAccountEmail(user.email);
+    await setActiveAccountEmail(user.email, user.email);
 
     return res.redirect(
       `${clientUrl}/upload?connected=${encodeURIComponent(user.email)}&connected_provider=${encodeURIComponent('microsoft')}`

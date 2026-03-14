@@ -72,6 +72,7 @@ const campaignSchema = new Schema(
     spam_label: { type: String, required: true },
     status: { type: String, required: true },
     scheduled_at: { type: Date, default: null },
+    owner_email: { type: String, default: null, index: true },
     account_email: { type: String, required: true },
     account_type: { type: String, required: true, default: 'google' },
     total_recipients: { type: Number, required: true },
@@ -83,6 +84,7 @@ const campaignSchema = new Schema(
 
 campaignSchema.index({ status: 1, scheduled_at: 1 });
 campaignSchema.index({ created_at: -1 });
+campaignSchema.index({ owner_email: 1, created_at: -1 });
 
 const recipientSchema = new Schema(
   {
@@ -101,12 +103,43 @@ const recipientSchema = new Schema(
   { versionKey: false }
 );
 
+const appUserSchema = new Schema(
+  {
+    email: { type: String, required: true, unique: true, index: true },
+    password_hash: { type: String, required: true },
+    role: { type: String, required: true, default: 'user' },
+    created_at: { type: Date, required: true },
+    updated_at: { type: Date, required: true },
+    last_login_at: { type: Date, default: null }
+  },
+  { versionKey: false }
+);
+
+appUserSchema.index({ role: 1, updated_at: -1 });
+
+const appSessionSchema = new Schema(
+  {
+    token_hash: { type: String, required: true, unique: true, index: true },
+    email: { type: String, required: true, index: true },
+    role: { type: String, required: true, default: 'user' },
+    expires_at: { type: Date, required: true },
+    created_at: { type: Date, required: true },
+    updated_at: { type: Date, required: true }
+  },
+  { versionKey: false }
+);
+
+appSessionSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0 });
+appSessionSchema.index({ email: 1, updated_at: -1 });
+
 const Setting = model('Setting', settingSchema);
 const GoogleAccount = model('GoogleAccount', googleAccountSchema);
 const MicrosoftAccount = model('MicrosoftAccount', microsoftAccountSchema);
 const SmtpAccount = model('SmtpAccount', smtpAccountSchema);
 const Campaign = model('Campaign', campaignSchema);
 const Recipient = model('Recipient', recipientSchema);
+const AppUser = model('AppUser', appUserSchema);
+const AppSession = model('AppSession', appSessionSchema);
 
 function nowDate() {
   return new Date();
@@ -114,6 +147,54 @@ function nowDate() {
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
+}
+
+function normalizeRole(role) {
+  return String(role || '').trim().toLowerCase() === 'admin' ? 'admin' : 'user';
+}
+
+function buildActiveAccountSettingKey(userEmail) {
+  const normalizedUserEmail = normalizeEmail(userEmail);
+  if (!normalizedUserEmail) {
+    return 'active_account_email';
+  }
+
+  return `active_account_email:${normalizedUserEmail}`;
+}
+
+function hashSessionToken(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function createSessionToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function hashPassword(password, saltHex) {
+  const salt = String(saltHex || crypto.randomBytes(16).toString('hex'));
+  const derived = crypto.scryptSync(String(password || ''), salt, 64).toString('hex');
+  return `scrypt$${salt}$${derived}`;
+}
+
+function verifyPasswordHash(password, passwordHash) {
+  const parts = String(passwordHash || '').split('$');
+  if (parts.length !== 3 || parts[0] !== 'scrypt') {
+    return false;
+  }
+
+  const [, salt, expected] = parts;
+  if (!salt || !expected) {
+    return false;
+  }
+
+  const calculated = crypto.scryptSync(String(password || ''), salt, 64).toString('hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  const calculatedBuffer = Buffer.from(calculated, 'hex');
+  if (!expectedBuffer.length || expectedBuffer.length !== calculatedBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(expectedBuffer, calculatedBuffer);
 }
 
 function normalizePort(port, fallback = 465) {
@@ -223,16 +304,174 @@ async function getSetting(key) {
   return row ? row.value : null;
 }
 
-async function setActiveAccountEmail(email) {
-  await setSetting('active_account_email', normalizeEmail(email));
+async function setActiveAccountEmail(email, userEmail = '') {
+  await setSetting(buildActiveAccountSettingKey(userEmail), normalizeEmail(email));
 }
 
-async function getActiveAccountEmail() {
-  return getSetting('active_account_email');
+async function getActiveAccountEmail(userEmail = '') {
+  return getSetting(buildActiveAccountSettingKey(userEmail));
 }
 
-async function clearActiveAccountEmail() {
-  await Setting.deleteOne({ key: 'active_account_email' });
+async function clearActiveAccountEmail(userEmail = '') {
+  await Setting.deleteOne({ key: buildActiveAccountSettingKey(userEmail) });
+}
+
+async function createAppUser(payload = {}) {
+  const email = normalizeEmail(payload.email);
+  const password = String(payload.password || '');
+  const role = normalizeRole(payload.role || 'user');
+
+  if (!email) {
+    throw new Error('Email is required.');
+  }
+
+  if (!password) {
+    throw new Error('Password is required.');
+  }
+
+  const existing = await AppUser.findOne({ email }).lean();
+  if (existing) {
+    throw new Error('User already exists for this email.');
+  }
+
+  const now = nowDate();
+  await AppUser.create({
+    email,
+    password_hash: hashPassword(password),
+    role,
+    created_at: now,
+    updated_at: now,
+    last_login_at: null
+  });
+
+  return {
+    email,
+    role
+  };
+}
+
+async function getAppUserByEmail(email) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    return null;
+  }
+
+  const row = await AppUser.findOne({ email: normalized }).lean();
+  if (!row) {
+    return null;
+  }
+
+  return {
+    email: row.email,
+    role: normalizeRole(row.role),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    last_login_at: row.last_login_at
+  };
+}
+
+async function verifyAppUserCredentials(email, password) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !password) {
+    return null;
+  }
+
+  const row = await AppUser.findOne({ email: normalizedEmail }).lean();
+  if (!row || !verifyPasswordHash(password, row.password_hash)) {
+    return null;
+  }
+
+  return {
+    email: row.email,
+    role: normalizeRole(row.role)
+  };
+}
+
+async function updateAppUserPassword(email, password) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    throw new Error('Email is required.');
+  }
+
+  if (!String(password || '')) {
+    throw new Error('Password is required.');
+  }
+
+  await AppUser.updateOne(
+    { email: normalizedEmail },
+    {
+      $set: {
+        password_hash: hashPassword(password),
+        updated_at: nowDate()
+      }
+    }
+  );
+}
+
+async function createAppSession(payload = {}) {
+  const email = normalizeEmail(payload.email);
+  const role = normalizeRole(payload.role || 'user');
+  const ttlDaysRaw = Number(payload.ttlDays || 7);
+  const ttlDays = Number.isFinite(ttlDaysRaw) && ttlDaysRaw > 0 ? Math.min(ttlDaysRaw, 30) : 7;
+
+  if (!email) {
+    throw new Error('Session email is required.');
+  }
+
+  const now = nowDate();
+  const expiresAt = new Date(now.getTime() + Math.round(ttlDays * 24 * 60 * 60 * 1000));
+  const token = createSessionToken();
+
+  await AppSession.create({
+    token_hash: hashSessionToken(token),
+    email,
+    role,
+    expires_at: expiresAt,
+    created_at: now,
+    updated_at: now
+  });
+
+  await AppUser.updateOne({ email }, { $set: { last_login_at: now, updated_at: now } });
+
+  return {
+    token,
+    email,
+    role,
+    expiresAt: expiresAt.toISOString()
+  };
+}
+
+async function getAppSessionByToken(token) {
+  const tokenValue = String(token || '').trim();
+  if (!tokenValue) {
+    return null;
+  }
+
+  const now = nowDate();
+  const row = await AppSession.findOne({
+    token_hash: hashSessionToken(tokenValue),
+    expires_at: { $gt: now }
+  }).lean();
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    email: row.email,
+    role: normalizeRole(row.role),
+    expiresAt: row.expires_at ? new Date(row.expires_at).toISOString() : null
+  };
+}
+
+async function revokeAppSession(token) {
+  const tokenValue = String(token || '').trim();
+  if (!tokenValue) {
+    return false;
+  }
+
+  const result = await AppSession.deleteOne({ token_hash: hashSessionToken(tokenValue) });
+  return Boolean(result.deletedCount);
 }
 
 async function saveGoogleAccount(email, tokens) {
@@ -277,8 +516,8 @@ async function getGoogleAccount(email) {
   };
 }
 
-async function getActiveGoogleAccount() {
-  const email = await getActiveAccountEmail();
+async function getActiveGoogleAccount(userEmail = '') {
+  const email = await getActiveAccountEmail(userEmail);
   if (!email) {
     return null;
   }
@@ -384,15 +623,27 @@ async function getSmtpAccount(email) {
   return serializeDocument(row);
 }
 
-async function listSmtpAccounts() {
-  const rows = await SmtpAccount.find({}, { password: 0 }).sort({ updated_at: -1 }).lean();
+function buildAccountEmailFilter(options = {}) {
+  const includeAll = Boolean(options.includeAll);
+  const ownerEmail = normalizeEmail(options.ownerEmail);
+  if (includeAll || !ownerEmail) {
+    return {};
+  }
+
+  return { email: ownerEmail };
+}
+
+async function listSmtpAccounts(options = {}) {
+  const rows = await SmtpAccount.find(buildAccountEmailFilter(options), { password: 0 }).sort({ updated_at: -1 }).lean();
   return rows.map(serializeDocument);
 }
 
-async function listGoogleAccounts() {
+async function listGoogleAccounts(options = {}) {
+  const accountFilter = buildAccountEmailFilter(options);
+  const activeUserEmail = normalizeEmail(options.ownerEmail);
   const [rows, activeEmail] = await Promise.all([
-    GoogleAccount.find({}, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
-    getActiveAccountEmail()
+    GoogleAccount.find(accountFilter, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
+    getActiveAccountEmail(activeUserEmail)
   ]);
 
   return rows.map((row) => ({
@@ -402,10 +653,12 @@ async function listGoogleAccounts() {
   }));
 }
 
-async function listMicrosoftAccounts() {
+async function listMicrosoftAccounts(options = {}) {
+  const accountFilter = buildAccountEmailFilter(options);
+  const activeUserEmail = normalizeEmail(options.ownerEmail);
   const [rows, activeEmail] = await Promise.all([
-    MicrosoftAccount.find({}, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
-    getActiveAccountEmail()
+    MicrosoftAccount.find(accountFilter, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
+    getActiveAccountEmail(activeUserEmail)
   ]);
 
   return rows.map((row) => ({
@@ -415,14 +668,16 @@ async function listMicrosoftAccounts() {
   }));
 }
 
-async function listConnectedAccounts() {
+async function listConnectedAccounts(options = {}) {
+  const accountFilter = buildAccountEmailFilter(options);
+  const activeUserEmail = normalizeEmail(options.ownerEmail);
   const [googleAccounts, microsoftAccounts, smtpAccounts, activeEmail] = await Promise.all([
-    GoogleAccount.find({}, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
-    MicrosoftAccount.find({}, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
-    SmtpAccount.find({}, { email: 1, connected_at: 1, updated_at: 1, host: 1, port: 1, secure: 1, from_name: 1 })
+    GoogleAccount.find(accountFilter, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
+    MicrosoftAccount.find(accountFilter, { email: 1, connected_at: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
+    SmtpAccount.find(accountFilter, { email: 1, connected_at: 1, updated_at: 1, host: 1, port: 1, secure: 1, from_name: 1 })
       .sort({ updated_at: -1 })
       .lean(),
-    getActiveAccountEmail()
+    getActiveAccountEmail(activeUserEmail)
   ]);
 
   const merged = [
@@ -446,9 +701,15 @@ async function listConnectedAccounts() {
   return merged.sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
 }
 
-async function getConnectedAccount(email) {
+async function getConnectedAccount(email, options = {}) {
   const normalized = normalizeEmail(email);
+  const ownerEmail = normalizeEmail(options.ownerEmail);
+  const includeAll = Boolean(options.includeAll);
   if (!normalized) {
+    return null;
+  }
+
+  if (!includeAll && ownerEmail && normalized !== ownerEmail) {
     return null;
   }
 
@@ -479,57 +740,75 @@ async function getConnectedAccount(email) {
   return null;
 }
 
-async function getActiveSenderAccount() {
-  const activeEmail = await getActiveAccountEmail();
+async function getActiveSenderAccount(userEmail = '', options = {}) {
+  const normalizedUserEmail = normalizeEmail(userEmail);
+  const activeEmail = await getActiveAccountEmail(normalizedUserEmail);
   if (!activeEmail) {
     return null;
   }
 
-  const account = await getConnectedAccount(activeEmail);
+  const account = await getConnectedAccount(activeEmail, {
+    ownerEmail: normalizedUserEmail,
+    includeAll: options.includeAll
+  });
   if (!account) {
-    await clearActiveAccountEmail();
+    await clearActiveAccountEmail(normalizedUserEmail);
     return null;
   }
 
   return account;
 }
 
-async function disconnectGoogleAccount(email) {
+async function disconnectGoogleAccount(email, userEmail = '') {
   const normalizedEmail = normalizeEmail(email);
+  const normalizedUserEmail = normalizeEmail(userEmail);
   if (!normalizedEmail) {
     return {
       disconnected: false,
       disconnectedEmail: null,
-      activeAccount: await getActiveAccountEmail()
+      activeAccount: await getActiveAccountEmail(normalizedUserEmail)
     };
   }
 
   const result = await GoogleAccount.deleteOne({ email: normalizedEmail });
-  const activeEmail = await getActiveAccountEmail();
+  const activeEmail = await getActiveAccountEmail(normalizedUserEmail);
 
   if (activeEmail === normalizedEmail) {
-    const fallback = await GoogleAccount.findOne({}, { email: 1 }).sort({ updated_at: -1 }).lean();
+    const fallback = await GoogleAccount.findOne(buildAccountEmailFilter({ ownerEmail: normalizedUserEmail }), { email: 1 })
+      .sort({ updated_at: -1 })
+      .lean();
     if (fallback?.email) {
-      await setActiveAccountEmail(fallback.email);
+      await setActiveAccountEmail(fallback.email, normalizedUserEmail);
     } else {
-      await clearActiveAccountEmail();
+      await clearActiveAccountEmail(normalizedUserEmail);
     }
   }
 
   return {
     disconnected: result.deletedCount > 0,
     disconnectedEmail: normalizedEmail,
-    activeAccount: await getActiveAccountEmail()
+    activeAccount: await getActiveAccountEmail(normalizedUserEmail)
   };
 }
 
-async function disconnectConnectedAccount(email) {
+async function disconnectConnectedAccount(email, userEmail = '', options = {}) {
   const normalizedEmail = normalizeEmail(email);
+  const normalizedUserEmail = normalizeEmail(userEmail);
+  const includeAll = Boolean(options.includeAll);
+
+  if (!includeAll && normalizedUserEmail && normalizedEmail && normalizedEmail !== normalizedUserEmail) {
+    return {
+      disconnected: false,
+      disconnectedEmail: normalizedEmail,
+      activeAccount: await getActiveAccountEmail(normalizedUserEmail)
+    };
+  }
+
   if (!normalizedEmail) {
     return {
       disconnected: false,
       disconnectedEmail: null,
-      activeAccount: await getActiveAccountEmail()
+      activeAccount: await getActiveAccountEmail(normalizedUserEmail)
     };
   }
 
@@ -539,28 +818,48 @@ async function disconnectConnectedAccount(email) {
     SmtpAccount.deleteOne({ email: normalizedEmail })
   ]);
 
-  const activeEmail = await getActiveAccountEmail();
+  const activeEmail = await getActiveAccountEmail(normalizedUserEmail);
   if (activeEmail === normalizedEmail) {
+    const fallbackFilter = buildAccountEmailFilter({
+      ownerEmail: normalizedUserEmail,
+      includeAll
+    });
     const [googleFallback, microsoftFallback, smtpFallback] = await Promise.all([
-      GoogleAccount.findOne({}, { email: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
-      MicrosoftAccount.findOne({}, { email: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
-      SmtpAccount.findOne({}, { email: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean()
+      GoogleAccount.findOne(fallbackFilter, { email: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
+      MicrosoftAccount.findOne(fallbackFilter, { email: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean(),
+      SmtpAccount.findOne(fallbackFilter, { email: 1, updated_at: 1 }).sort({ updated_at: -1 }).lean()
     ]);
 
     const fallbackCandidates = [googleFallback, microsoftFallback, smtpFallback].filter(Boolean);
     fallbackCandidates.sort((a, b) => new Date(b.updated_at || 0).getTime() - new Date(a.updated_at || 0).getTime());
 
     if (fallbackCandidates[0]?.email) {
-      await setActiveAccountEmail(fallbackCandidates[0].email);
+      await setActiveAccountEmail(fallbackCandidates[0].email, normalizedUserEmail);
     } else {
-      await clearActiveAccountEmail();
+      await clearActiveAccountEmail(normalizedUserEmail);
     }
   }
 
   return {
     disconnected: Boolean(googleResult.deletedCount || microsoftResult.deletedCount || smtpResult.deletedCount),
     disconnectedEmail: normalizedEmail,
-    activeAccount: await getActiveAccountEmail()
+    activeAccount: await getActiveAccountEmail(normalizedUserEmail)
+  };
+}
+
+function buildCampaignOwnershipFilter(options = {}) {
+  const includeAll = Boolean(options.includeAll);
+  const ownerEmail = normalizeEmail(options.ownerEmail);
+  if (includeAll || !ownerEmail) {
+    return {};
+  }
+
+  return {
+    $or: [
+      { owner_email: ownerEmail },
+      { owner_email: null, account_email: ownerEmail },
+      { owner_email: { $exists: false }, account_email: ownerEmail }
+    ]
   };
 }
 
@@ -581,6 +880,7 @@ async function createCampaign(payload) {
     spam_label: payload.spamLabel,
     status: payload.status,
     scheduled_at: payload.scheduledAt ? new Date(payload.scheduledAt) : null,
+    owner_email: normalizeEmail(payload.ownerEmail || payload.accountEmail),
     account_email: normalizeEmail(payload.accountEmail),
     account_type: normalizeAccountType(payload.accountType || 'google'),
     total_recipients: deduped.length,
@@ -602,12 +902,14 @@ async function createCampaign(payload) {
   return serializeDocument(campaign);
 }
 
-async function getCampaignById(id) {
+async function getCampaignById(id, options = {}) {
   if (!isValidId(id)) {
     return null;
   }
 
-  const row = await Campaign.findById(asObjectId(id)).lean();
+  const ownershipFilter = buildCampaignOwnershipFilter(options);
+  const query = { _id: asObjectId(id), ...ownershipFilter };
+  const row = await Campaign.findOne(query).lean();
   return serializeDocument(row);
 }
 
@@ -741,8 +1043,9 @@ async function finalizeCampaignStatus(campaignId) {
   return status;
 }
 
-async function listCampaigns() {
-  const campaigns = await Campaign.find({}).sort({ created_at: -1 }).lean();
+async function listCampaigns(options = {}) {
+  const ownershipFilter = buildCampaignOwnershipFilter(options);
+  const campaigns = await Campaign.find(ownershipFilter).sort({ created_at: -1 }).lean();
 
   if (!campaigns.length) {
     return [];
@@ -886,6 +1189,13 @@ module.exports = {
   getActiveAccountEmail,
   clearActiveAccountEmail,
   setActiveAccountEmail,
+  createAppUser,
+  getAppUserByEmail,
+  verifyAppUserCredentials,
+  updateAppUserPassword,
+  createAppSession,
+  getAppSessionByToken,
+  revokeAppSession,
   saveGoogleAccount,
   saveMicrosoftAccount,
   saveSmtpAccount,

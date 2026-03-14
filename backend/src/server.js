@@ -5,6 +5,7 @@ const path = require('path');
 const cors = require('cors');
 const express = require('express');
 const { connectDatabase, isDatabaseConnected, getDatabaseStatus, getSetting, setSetting } = require('./db');
+const { attachAppUserFromToken } = require('./middleware/appAuth');
 const authRoutes = require('./routes/auth');
 const apiRoutes = require('./routes/api');
 const { startCampaignScheduler } = require('./services/campaignRunner');
@@ -95,6 +96,7 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(attachAppUserFromToken);
 
 app.get('/health', (_req, res) => {
   res.json({

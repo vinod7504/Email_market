@@ -192,7 +192,7 @@ function renderPreviewMarkup(value) {
   return html.replace(/\n/g, '<br/>');
 }
 
-export default function ComposePage({ flow, onRecipientsReady }) {
+export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout }) {
   const navigate = useNavigate();
 
   const [auth, setAuth] = useState({
@@ -630,7 +630,11 @@ export default function ComposePage({ flow, onRecipientsReady }) {
   }
 
   return (
-    <AppLayout caption="Compose subject/body/signature, verify SMTP credentials in-app, and send exactly what you entered.">
+    <AppLayout
+      caption="Compose subject/body/signature, verify SMTP credentials in-app, and send exactly what you entered."
+      user={appUser}
+      onLogout={onLogout}
+    >
       <header className="page-header">
         <div>
           <h1 className="page-title">Template, Spam Meter & Send</h1>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import AppLayout from '../components/AppLayout';
-import { fetchJson, formatDateTime, resolveApiUrl } from '../lib/api';
+import { fetchJson, formatDateTime, resolveApiUrl, withAuthHeaders } from '../lib/api';
 
 function statusBadgeClass(status) {
   const key = String(status || '').toLowerCase();
@@ -17,7 +17,7 @@ function Notice({ notice }) {
   return <div className={className}>{notice.message}</div>;
 }
 
-export default function DashboardPage() {
+export default function DashboardPage({ appUser, onLogout }) {
   const location = useLocation();
   const [auth, setAuth] = useState({ connected: false, activeAccount: null, activeAccountDetails: null });
   const [campaigns, setCampaigns] = useState([]);
@@ -90,6 +90,9 @@ export default function DashboardPage() {
   }, [campaigns, selectedCampaignId]);
 
   const selectedCampaignSummary = selectedCampaignMetrics || selectedCampaign;
+  const campaignScopeDescription = appUser?.isAdmin
+    ? 'All campaign runs with sending and open-tracking status.'
+    : 'Campaign runs created under this login account.';
 
   const kpis = useMemo(() => {
     if (selectedCampaignMetrics) {
@@ -115,7 +118,7 @@ export default function DashboardPage() {
     const openRate = totalSent > 0 ? ((totalOpened / totalSent) * 100).toFixed(1) : '0.0';
 
     return {
-      scope: 'Metrics for all campaigns',
+      scope: 'Metrics for visible campaigns',
       cards: [
         { title: 'Total Campaigns', value: totalCampaigns },
         { title: 'Total Sent', value: totalSent },
@@ -197,7 +200,9 @@ export default function DashboardPage() {
 
     try {
       setIsExporting(true);
-      const response = await fetch(resolveApiUrl(`/api/campaigns/${selectedCampaignId}/recipients/export.xlsx?openedOnly=1`));
+      const response = await fetch(resolveApiUrl(`/api/campaigns/${selectedCampaignId}/recipients/export.xlsx?openedOnly=1`), {
+        headers: withAuthHeaders()
+      });
 
       if (!response.ok) {
         const contentType = response.headers.get('content-type') || '';
@@ -242,11 +247,19 @@ export default function DashboardPage() {
       : 'No account connected';
 
   return (
-    <AppLayout caption="Track send performance, email opens, and recipient-level delivery status in real time.">
+    <AppLayout
+      caption="Track send performance, email opens, and recipient-level delivery status in real time."
+      user={appUser}
+      onLogout={onLogout}
+    >
       <header className="page-header">
         <div>
           <h1 className="page-title">Campaign Dashboard</h1>
-          <div className="page-subtitle">View all sent campaigns and recipient open-status events.</div>
+          <div className="page-subtitle">
+            {appUser?.isAdmin
+              ? 'Admin view: campaigns from all users and recipient open-status events.'
+              : 'Your view: campaigns created from your login and recipient open-status events.'}
+          </div>
         </div>
         <div className="inline-actions no-top-margin">
           <div className={accountBadgeClass}>{accountLabel}</div>
@@ -269,7 +282,7 @@ export default function DashboardPage() {
       <section className="split section-gap">
         <div className="card">
           <h3>Campaigns</h3>
-          <p>All campaign runs with sending and open-tracking status.</p>
+          <p>{campaignScopeDescription}</p>
 
           <div className="table-wrap space-top-small">
             <table className="responsive-table campaigns-table">

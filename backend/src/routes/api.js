@@ -20,6 +20,7 @@ const { hasMicrosoftConfig } = require('../services/microsoft');
 const { hasOpenAIConfig, analyzeSpamWithOpenAI } = require('../services/openai');
 const { triggerCampaignProcessing } = require('../services/campaignRunner');
 const { notifyEmailOpened } = require('../services/trackingWebhook');
+const { requireAppUser, isAdminUser } = require('../middleware/appAuth');
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -29,6 +30,14 @@ const upload = multer({
 });
 
 const router = express.Router();
+
+router.use((req, res, next) => {
+  if (!String(req.path || '').startsWith('/api/')) {
+    return next();
+  }
+
+  return requireAppUser(req, res, next);
+});
 
 const transparentGif = Buffer.from(
   'R0lGODlhAQABAIABAP///wAAACwAAAAAAQABAAACAkQBADs=',
@@ -66,6 +75,26 @@ function parseOpenedOnly(value) {
   }
 
   return true;
+}
+
+function getAuthenticatedUser(req) {
+  const email = String(req.appUser?.email || '').trim().toLowerCase();
+  if (!email) {
+    return null;
+  }
+
+  return {
+    email,
+    isAdmin: isAdminUser(req.appUser)
+  };
+}
+
+function getCampaignScopeForUser(req) {
+  const user = getAuthenticatedUser(req);
+  return {
+    ownerEmail: user?.email || '',
+    includeAll: Boolean(user?.isAdmin)
+  };
 }
 
 async function getPublicBaseUrl(req) {
@@ -373,11 +402,13 @@ router.post('/api/campaigns', upload.single('excelFile'), async (req, res) => {
   }
 
   try {
+    const user = getAuthenticatedUser(req);
+
     if (!req.file) {
       return res.status(400).json({ error: 'Excel sheet is required.' });
     }
 
-    const activeAccount = await getActiveSenderAccount();
+    const activeAccount = await getActiveSenderAccount(user.email, { includeAll: user.isAdmin });
     if (!activeAccount) {
       return res.status(400).json({ error: 'Connect a sender account before creating a campaign.' });
     }
@@ -431,6 +462,7 @@ router.post('/api/campaigns', upload.single('excelFile'), async (req, res) => {
       spamLabel: spam.label,
       status,
       scheduledAt: status === 'SCHEDULED' ? scheduleDate : null,
+      ownerEmail: user.email,
       accountEmail: activeAccount.email,
       accountType: activeAccount.provider || 'google',
       recipientEmails: recipients
@@ -451,13 +483,14 @@ router.post('/api/campaigns', upload.single('excelFile'), async (req, res) => {
   }
 });
 
-router.get('/api/campaigns', async (_req, res) => {
+router.get('/api/campaigns', async (req, res) => {
   if (!isDatabaseConnected()) {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
   try {
-    const campaigns = await listCampaigns();
+    const scope = getCampaignScopeForUser(req);
+    const campaigns = await listCampaigns(scope);
     res.json({ campaigns });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Failed to load campaigns.' });
@@ -476,7 +509,8 @@ router.get('/api/campaigns/:id/recipients', async (req, res) => {
   }
 
   try {
-    const campaign = await getCampaignById(campaignId);
+    const scope = getCampaignScopeForUser(req);
+    const campaign = await getCampaignById(campaignId, scope);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found.' });
     }
@@ -508,7 +542,8 @@ router.get('/api/campaigns/:id/recipients/export.xlsx', async (req, res) => {
   }
 
   try {
-    const campaign = await getCampaignById(campaignId);
+    const scope = getCampaignScopeForUser(req);
+    const campaign = await getCampaignById(campaignId, scope);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found.' });
     }
@@ -547,7 +582,8 @@ router.post('/api/campaigns/:id/send-now', async (req, res) => {
   }
 
   try {
-    const campaign = await getCampaignById(campaignId);
+    const scope = getCampaignScopeForUser(req);
+    const campaign = await getCampaignById(campaignId, scope);
     if (!campaign) {
       return res.status(404).json({ error: 'Campaign not found.' });
     }
