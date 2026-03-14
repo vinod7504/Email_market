@@ -202,6 +202,17 @@ function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
 }
 
+function getBodyValue(body, keys = []) {
+  const source = body && typeof body === 'object' ? body : {};
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined && source[key] !== null) {
+      return source[key];
+    }
+  }
+
+  return '';
+}
+
 function encodeStatePayload(payload = {}) {
   return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
 }
@@ -240,7 +251,24 @@ function parseSecure(value, port) {
     return Number(port || 465) === 465;
   }
 
-  return !['false', '0', 'no', 'off'].includes(lowered);
+  if (['false', '0', 'no', 'off', 'starttls', 'explicit'].includes(lowered)) {
+    return false;
+  }
+
+  if (['true', '1', 'yes', 'on', 'ssl', 'tls', 'smtps', 'implicit'].includes(lowered)) {
+    return true;
+  }
+
+  return Number(port || 465) === 465;
+}
+
+function getSmtpTimeoutPlatformHint() {
+  const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.RENDER_EXTERNAL_URL);
+  if (!isRender) {
+    return '';
+  }
+
+  return ' If this backend is on Render Free, outbound SMTP ports 25/465/587 are blocked. Upgrade the service to a paid instance or switch to an email API provider.';
 }
 
 function isMicrosoftTenantSmtpDisabled(message) {
@@ -440,13 +468,22 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
     return res.status(503).json({ error: 'Database unavailable. Start MongoDB and retry.' });
   }
 
-  const email = normalizeEmail(req.body?.email);
-  const host = String(req.body?.host || '').trim().toLowerCase();
-  const username = String(req.body?.username || '').trim();
-  const password = String(req.body?.password || '');
-  const fromName = String(req.body?.fromName || '').trim();
-  const port = parsePort(req.body?.port);
-  const secure = parseSecure(req.body?.secure, port);
+  const body = req.body || {};
+  const email = normalizeEmail(getBodyValue(body, ['email', 'Email', 'senderEmail', 'SenderEmail', 'fromEmail', 'from_email']));
+  const host = String(
+    getBodyValue(body, ['host', 'Host', 'smtpHost', 'smtp_host', 'SMTP_HOST', 'server', 'hostname'])
+  )
+    .trim()
+    .toLowerCase();
+  const username = String(
+    getBodyValue(body, ['username', 'Username', 'user', 'User', 'smtpUser', 'smtp_user', 'login', 'smtpLogin'])
+  ).trim();
+  const password = String(
+    getBodyValue(body, ['password', 'Password', 'appPassword', 'app_password', 'pass', 'Pass', 'smtpPassword', 'smtp_password'])
+  );
+  const fromName = String(getBodyValue(body, ['fromName', 'FromName', 'from_name', 'displayName', 'display_name'])).trim();
+  const port = parsePort(getBodyValue(body, ['port', 'Port', 'smtpPort', 'smtp_port']));
+  const secure = parseSecure(getBodyValue(body, ['secure', 'Secure', 'ssl', 'SSL', 'tls', 'TLS', 'encryption']), port);
 
   if (!email) {
     return res.status(400).json({ error: 'SMTP email is required.' });
@@ -549,14 +586,15 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
       }
 
       if (isConnectionTimeout(detail)) {
+        const platformHint = getSmtpTimeoutPlatformHint();
         if (manualConfigProvided) {
           return res.status(400).json({
-            error: `Email verification failed: SMTP server did not respond in time. Tried: ${attemptedHosts}. Check SMTP host, port, SSL/TLS mode, and outbound firewall rules. Detail: ${detail}`
+            error: `Email verification failed: SMTP server did not respond in time. Tried: ${attemptedHosts}. Check SMTP host, port, SSL/TLS mode, and outbound firewall rules.${platformHint} Detail: ${detail}`
           });
         }
 
         return res.status(400).json({
-          error: `Email verification failed: SMTP server timed out during auto-detection. Tried: ${attemptedHosts}. For custom providers (example: Hostinger), enter SMTP Host/Port/SSL manually and retry. Detail: ${detail}`
+          error: `Email verification failed: SMTP server timed out during auto-detection. Tried: ${attemptedHosts}. For custom providers (example: Hostinger), enter SMTP Host/Port/SSL manually and retry.${platformHint} Detail: ${detail}`
         });
       }
 
@@ -599,8 +637,9 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
     }
 
     if (isConnectionTimeout(rawMessage)) {
+      const platformHint = getSmtpTimeoutPlatformHint();
       return res.status(400).json({
-        error: `Email verification failed: SMTP server did not respond in time. Check SMTP host/port/SSL settings and network/firewall access. Detail: ${rawMessage || 'timeout'}`
+        error: `Email verification failed: SMTP server did not respond in time. Check SMTP host/port/SSL settings and network/firewall access.${platformHint} Detail: ${rawMessage || 'timeout'}`
       });
     }
 
