@@ -127,6 +127,16 @@ function isValidGoogleRedirectUri(value) {
   }
 }
 
+function isValidMicrosoftRedirectUri(value) {
+  try {
+    const parsed = new URL(normalizeOrigin(value));
+    const isHttp = parsed.protocol === 'http:' || parsed.protocol === 'https:';
+    return isHttp && parsed.pathname === '/auth/microsoft/callback';
+  } catch (_error) {
+    return false;
+  }
+}
+
 function getGoogleRedirectUri(req) {
   const configured = normalizeOrigin(process.env.GOOGLE_REDIRECT_URI);
   const requestBaseUrl = getRequestBaseUrl(req);
@@ -143,6 +153,27 @@ function getGoogleRedirectUri(req) {
   const backendBaseUrl = resolveBackendBaseUrl(req);
   if (backendBaseUrl) {
     return `${backendBaseUrl}/auth/google/callback`;
+  }
+
+  return configured || '';
+}
+
+function getMicrosoftRedirectUri(req) {
+  const configured = normalizeOrigin(process.env.MICROSOFT_REDIRECT_URI);
+  const requestBaseUrl = getRequestBaseUrl(req);
+
+  if (configured) {
+    const configuredIsLocal = isLocalhostUrl(configured);
+    const requestIsLocal = isLocalhostUrl(requestBaseUrl);
+
+    if (!configuredIsLocal || requestIsLocal || !requestBaseUrl) {
+      return configured;
+    }
+  }
+
+  const backendBaseUrl = resolveBackendBaseUrl(req);
+  if (backendBaseUrl) {
+    return `${backendBaseUrl}/auth/microsoft/callback`;
   }
 
   return configured || '';
@@ -680,7 +711,7 @@ router.get('/api/auth/google/url', requireAppUser, (req, res) => {
   }
 });
 
-router.get('/api/auth/microsoft/url', requireAppUser, (_req, res) => {
+router.get('/api/auth/microsoft/url', requireAppUser, (req, res) => {
   if (!hasMicrosoftConfig()) {
     return res.status(400).json({
       error:
@@ -689,8 +720,20 @@ router.get('/api/auth/microsoft/url', requireAppUser, (_req, res) => {
   }
 
   try {
-    const url = getMicrosoftAuthUrl();
-    return res.json({ url });
+    const appUser = getAuthenticatedUser(req);
+    const redirectUri = getMicrosoftRedirectUri(req);
+    const safeRedirectUri = isValidMicrosoftRedirectUri(redirectUri) ? redirectUri : '';
+
+    const oauthOptions = {
+      appUserEmail: appUser?.email || ''
+    };
+
+    if (safeRedirectUri) {
+      oauthOptions.redirectUri = safeRedirectUri;
+    }
+
+    const url = getMicrosoftAuthUrl(oauthOptions);
+    return res.json({ url, redirectUri: safeRedirectUri });
   } catch (error) {
     return res.status(500).json({ error: error.message || 'Could not create Microsoft OAuth URL.' });
   }
@@ -1136,6 +1179,7 @@ router.get('/auth/google/callback', async (req, res) => {
 router.get('/auth/microsoft/callback', async (req, res) => {
   const { code, error, error_description: errorDescription, state } = req.query;
   const clientUrl = getClientUrl(req);
+  const redirectUri = getMicrosoftRedirectUri(req);
 
   if (error) {
     return redirectWithOAuthError(res, clientUrl, 'microsoft', {
@@ -1159,9 +1203,11 @@ router.get('/auth/microsoft/callback', async (req, res) => {
   }
 
   try {
-    const user = await exchangeMicrosoftCodeForUser(code, state);
+    const user = await exchangeMicrosoftCodeForUser(code, state, {
+      redirectUri: isValidMicrosoftRedirectUri(redirectUri) ? redirectUri : undefined
+    });
     await saveMicrosoftAccount(user.email, user.tokens);
-    await setActiveAccountEmail(user.email, user.email);
+    await setActiveAccountEmail(user.email, user.appUserEmail || user.email);
 
     return res.redirect(
       `${clientUrl}/upload?connected=${encodeURIComponent(user.email)}&connected_provider=${encodeURIComponent('microsoft')}`

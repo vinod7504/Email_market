@@ -26,8 +26,12 @@ function hasMicrosoftConfig() {
   return Boolean(cfg.clientId && cfg.redirectUri);
 }
 
-function getMicrosoftBaseAuthUrl() {
-  const cfg = getMicrosoftConfig();
+function getMicrosoftBaseAuthUrl(config = {}) {
+  const cfg = {
+    ...getMicrosoftConfig(),
+    ...(config || {})
+  };
+
   if (!cfg.clientId || !cfg.redirectUri) {
     throw new Error(
       'Microsoft OAuth config is missing. Set MICROSOFT_CLIENT_ID and MICROSOFT_REDIRECT_URI.'
@@ -67,10 +71,16 @@ function pruneExpiredPkceStates() {
   }
 }
 
-function savePkceState(state, codeVerifier) {
+function savePkceState(state, payload = {}) {
   pruneExpiredPkceStates();
+  const codeVerifier = String(payload.codeVerifier || '').trim();
+  const appUserEmail = String(payload.appUserEmail || '').trim().toLowerCase();
+  const redirectUri = String(payload.redirectUri || '').trim();
+
   pkceStateStore.set(state, {
     codeVerifier,
+    appUserEmail,
+    redirectUri,
     expiresAt: Date.now() + PKCE_STATE_TTL_MS
   });
 }
@@ -92,16 +102,32 @@ function consumePkceState(state) {
     return null;
   }
 
-  return String(entry.codeVerifier || '').trim() || null;
+  const codeVerifier = String(entry.codeVerifier || '').trim();
+  if (!codeVerifier) {
+    return null;
+  }
+
+  return {
+    codeVerifier,
+    appUserEmail: String(entry.appUserEmail || '').trim().toLowerCase(),
+    redirectUri: String(entry.redirectUri || '').trim()
+  };
 }
 
-function getMicrosoftAuthUrl() {
-  const cfg = getMicrosoftConfig();
-  const base = getMicrosoftBaseAuthUrl();
+function getMicrosoftAuthUrl(options = {}) {
+  const cfg = {
+    ...getMicrosoftConfig(),
+    ...(options || {})
+  };
+  const base = getMicrosoftBaseAuthUrl(cfg);
   const state = createOAuthState();
   const codeVerifier = createCodeVerifier();
   const codeChallenge = createCodeChallenge(codeVerifier);
-  savePkceState(state, codeVerifier);
+  savePkceState(state, {
+    codeVerifier,
+    appUserEmail: options.appUserEmail || '',
+    redirectUri: cfg.redirectUri
+  });
 
   const params = new URLSearchParams({
     client_id: cfg.clientId,
@@ -114,6 +140,11 @@ function getMicrosoftAuthUrl() {
     code_challenge: codeChallenge,
     code_challenge_method: 'S256'
   });
+
+  const loginHint = String(options.loginHint || '').trim();
+  if (loginHint) {
+    params.set('login_hint', loginHint);
+  }
 
   return `${base}/authorize?${params.toString()}`;
 }
@@ -208,9 +239,12 @@ async function fetchMicrosoftMe(accessToken) {
   };
 }
 
-async function requestMicrosoftToken(formData) {
-  const cfg = getMicrosoftConfig();
-  const base = getMicrosoftBaseAuthUrl();
+async function requestMicrosoftToken(formData, options = {}) {
+  const cfg = {
+    ...getMicrosoftConfig(),
+    ...(options || {})
+  };
+  const base = getMicrosoftBaseAuthUrl(cfg);
   const clientSecret = String(cfg.clientSecret || '').trim();
   const includeSecretByDefault = Boolean(clientSecret);
 
@@ -265,16 +299,20 @@ async function requestMicrosoftToken(formData) {
   return parsed.json || {};
 }
 
-async function exchangeCodeForUser(code, state) {
-  const codeVerifier = consumePkceState(state);
-  if (!codeVerifier) {
+async function exchangeCodeForUser(code, state, options = {}) {
+  const statePayload = consumePkceState(state);
+  if (!statePayload?.codeVerifier) {
     throw new Error('Microsoft OAuth session expired or invalid state. Please click Connect Microsoft Account again.');
   }
+
+  const resolvedRedirectUri = String(options.redirectUri || statePayload.redirectUri || getMicrosoftConfig().redirectUri).trim();
 
   const tokenPayload = await requestMicrosoftToken({
     grant_type: 'authorization_code',
     code: String(code || '').trim(),
-    code_verifier: codeVerifier
+    code_verifier: statePayload.codeVerifier
+  }, {
+    redirectUri: resolvedRedirectUri
   });
 
   const tokens = normalizeTokenPayload(tokenPayload);
@@ -282,7 +320,8 @@ async function exchangeCodeForUser(code, state) {
 
   return {
     email: me.email,
-    tokens
+    tokens,
+    appUserEmail: String(statePayload.appUserEmail || '').trim().toLowerCase()
   };
 }
 
