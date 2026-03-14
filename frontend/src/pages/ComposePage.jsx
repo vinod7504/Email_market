@@ -217,7 +217,11 @@ export default function ComposePage({ flow, onRecipientsReady }) {
   const [smtp, setSmtp] = useState({
     email: '',
     password: '',
-    fromName: ''
+    fromName: '',
+    username: '',
+    host: '',
+    port: '',
+    secure: true
   });
   const [smtpConnecting, setSmtpConnecting] = useState(false);
 
@@ -402,11 +406,27 @@ export default function ComposePage({ flow, onRecipientsReady }) {
     setSmtpConnecting(true);
 
     try {
+      const smtpUsername = String(smtp.username || '').trim();
+      const smtpHost = String(smtp.host || '').trim();
+      const smtpPort = String(smtp.port || '').trim();
+      const smtpPortNumber = Number(smtpPort);
       const payload = {
         email: String(smtp.email || '').trim(),
         password: String(smtp.password || ''),
         fromName: String(smtp.fromName || '').trim()
       };
+      if (smtpUsername) {
+        payload.username = smtpUsername;
+      }
+      if (smtpHost) {
+        payload.host = smtpHost;
+      }
+      if (smtpPort && Number.isFinite(smtpPortNumber) && smtpPortNumber > 0) {
+        payload.port = Math.round(smtpPortNumber);
+      }
+      if (smtpHost || smtpPort) {
+        payload.secure = Boolean(smtp.secure);
+      }
 
       const response = await fetchJson('/api/auth/smtp/connect', {
         method: 'POST',
@@ -713,6 +733,62 @@ export default function ComposePage({ flow, onRecipientsReady }) {
                   onChange={(event) => handleSmtpFieldChange('password', event.target.value)}
                   placeholder="Enter password"
                 />
+              </div>
+
+              <div className="space-top-small">
+                <label>Advanced SMTP (optional)</label>
+                <small className="muted">
+                  Use for custom providers like Hostinger. Example: Host `smtp.hostinger.com`, Port `465`, SSL/TLS.
+                </small>
+              </div>
+
+              <div className="grid grid-2 space-top-small">
+                <div>
+                  <label htmlFor="smtpUsernameCompose">SMTP Login Username (optional)</label>
+                  <input
+                    id="smtpUsernameCompose"
+                    type="text"
+                    value={smtp.username}
+                    onChange={(event) => handleSmtpFieldChange('username', event.target.value)}
+                    placeholder="support@factoresearch.com"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="smtpHostComposeField">SMTP Host (optional)</label>
+                  <input
+                    id="smtpHostComposeField"
+                    type="text"
+                    value={smtp.host}
+                    onChange={(event) => handleSmtpFieldChange('host', event.target.value)}
+                    placeholder="smtp.hostinger.com"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-2 space-top-small">
+                <div>
+                  <label htmlFor="smtpPortCompose">SMTP Port (optional)</label>
+                  <input
+                    id="smtpPortCompose"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={smtp.port}
+                    onChange={(event) => handleSmtpFieldChange('port', event.target.value)}
+                    placeholder="465"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="smtpSecureCompose">Connection Security</label>
+                  <select
+                    id="smtpSecureCompose"
+                    value={smtp.secure ? 'ssl' : 'starttls'}
+                    onChange={(event) => handleSmtpFieldChange('secure', event.target.value === 'ssl')}
+                  >
+                    <option value="ssl">SSL/TLS (usually 465)</option>
+                    <option value="starttls">STARTTLS (usually 587)</option>
+                  </select>
+                </div>
               </div>
 
               <div className="inline-actions">

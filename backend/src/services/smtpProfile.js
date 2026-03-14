@@ -7,7 +7,9 @@ const GENERIC_PROVIDER_CANDIDATES = [
   { host: 'smtp.gmail.com', port: 587, secure: false, source: 'generic-gmail-starttls' },
   { host: 'smtp.zoho.com', port: 465, secure: true, source: 'generic-zoho' },
   { host: 'smtp.mail.yahoo.com', port: 465, secure: true, source: 'generic-yahoo' },
-  { host: 'smtp.mail.me.com', port: 587, secure: false, source: 'generic-icloud' }
+  { host: 'smtp.mail.me.com', port: 587, secure: false, source: 'generic-icloud' },
+  { host: 'smtp.hostinger.com', port: 465, secure: true, source: 'generic-hostinger-ssl' },
+  { host: 'smtp.hostinger.com', port: 587, secure: false, source: 'generic-hostinger-starttls' }
 ];
 
 function extractEmailDomain(email) {
@@ -114,6 +116,9 @@ function addMxBasedCandidate(exchange, candidates) {
     addCandidate(candidates, { host: 'smtp.mail.yahoo.com', port: 465, secure: true, source: 'mx-yahoo' });
   } else if (host.includes('secureserver.net')) {
     addCandidate(candidates, { host: 'smtpout.secureserver.net', port: 465, secure: true, source: 'mx-secureserver' });
+  } else if (host.includes('hostinger')) {
+    addCandidate(candidates, { host: 'smtp.hostinger.com', port: 465, secure: true, source: 'mx-hostinger-ssl' });
+    addCandidate(candidates, { host: 'smtp.hostinger.com', port: 587, secure: false, source: 'mx-hostinger-starttls' });
   }
 }
 

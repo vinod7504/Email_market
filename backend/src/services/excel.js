@@ -34,17 +34,24 @@ function extractEmailsFromExcelBuffer(buffer) {
   return [...allEmails];
 }
 
-function toIsoOrEmpty(value) {
+function formatDateTimeForExport(value) {
   if (!value) {
-    return '';
+    return '-';
   }
 
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
-    return '';
+    return '-';
   }
 
-  return parsed.toISOString();
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  const year = parsed.getFullYear();
+  const hours = String(parsed.getHours()).padStart(2, '0');
+  const minutes = String(parsed.getMinutes()).padStart(2, '0');
+  const seconds = String(parsed.getSeconds()).padStart(2, '0');
+
+  return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
 }
 
 function isOpenedRecipient(recipient = {}) {
@@ -53,7 +60,7 @@ function isOpenedRecipient(recipient = {}) {
 
 function getOpenStatus(recipient = {}) {
   if (isOpenedRecipient(recipient)) {
-    return 'Open';
+    return 'Opened';
   }
 
   if (recipient.status === 'SENT') {
@@ -68,41 +75,29 @@ function getOpenStatus(recipient = {}) {
 }
 
 function buildCampaignRecipientsWorkbookBuffer(payload = {}) {
-  const campaign = payload.campaign || {};
   const recipients = Array.isArray(payload.recipients) ? payload.recipients : [];
-  const exportTypeLabel = String(payload.exportTypeLabel || 'All Recipients');
-
-  const rows = recipients.map((recipient) => ({
-    Campaign: String(campaign.name || ''),
-    CampaignStatus: String(campaign.status || ''),
-    Email: String(recipient.email || ''),
-    DeliveryStatus: String(recipient.status || ''),
-    OpenStatus: getOpenStatus(recipient),
-    SentAt: toIsoOrEmpty(recipient.sent_at),
-    OpenedAt: toIsoOrEmpty(recipient.opened_at),
-    OpenCount: Number(recipient.open_count || 0),
-    Error: String(recipient.error || ''),
-    TrackingToken: String(recipient.tracking_token || ''),
-    MessageId: String(recipient.message_id || '')
-  }));
-
-  const summaryRows = [
-    { Metric: 'Campaign Name', Value: String(campaign.name || '') },
-    { Metric: 'Campaign ID', Value: String(campaign.id || '') },
-    { Metric: 'Status', Value: String(campaign.status || '') },
-    { Metric: 'Subject', Value: String(campaign.subject || '') },
-    { Metric: 'Export Type', Value: exportTypeLabel },
-    { Metric: 'Created At', Value: toIsoOrEmpty(campaign.created_at) },
-    { Metric: 'Scheduled At', Value: toIsoOrEmpty(campaign.scheduled_at) },
-    { Metric: 'Campaign Recipients', Value: Number(campaign.total_recipients || 0) },
-    { Metric: 'Exported Recipients', Value: Number(recipients.length || 0) }
-  ];
+  const rows = recipients.map((recipient) => {
+    const delivery = String(recipient.status || '').trim();
+    return {
+      Email: String(recipient.email || ''),
+      Delivery: delivery || 'PENDING',
+      'Open Status': getOpenStatus(recipient),
+      'Sent At': formatDateTimeForExport(recipient.sent_at),
+      'Opened At': formatDateTimeForExport(recipient.opened_at),
+      'Open Count': Number(recipient.open_count || 0)
+    };
+  });
 
   const workbook = XLSX.utils.book_new();
   const recipientsSheet = XLSX.utils.json_to_sheet(rows);
-  const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
-
-  XLSX.utils.book_append_sheet(workbook, summarySheet, 'Campaign');
+  recipientsSheet['!cols'] = [
+    { wch: 38 },
+    { wch: 14 },
+    { wch: 14 },
+    { wch: 22 },
+    { wch: 22 },
+    { wch: 12 }
+  ];
   XLSX.utils.book_append_sheet(workbook, recipientsSheet, 'Recipients');
 
   return XLSX.write(workbook, {

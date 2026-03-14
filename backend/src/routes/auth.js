@@ -257,6 +257,24 @@ function isDnsResolutionFailure(message) {
   return lowered.includes('enotfound') || lowered.includes('getaddrinfo');
 }
 
+function isConnectionTimeout(message) {
+  const lowered = String(message || '').toLowerCase();
+  return lowered.includes('timed out') || lowered.includes('timeout') || lowered.includes('etimedout');
+}
+
+function isSmtpConnectivityFailure(message) {
+  const lowered = String(message || '').toLowerCase();
+  return (
+    isConnectionTimeout(lowered) ||
+    lowered.includes('getaddrinfo') ||
+    lowered.includes('enotfound') ||
+    lowered.includes('econnrefused') ||
+    lowered.includes('ehostunreach') ||
+    lowered.includes('enetunreach') ||
+    lowered.includes('econnreset')
+  );
+}
+
 function summarizeAttemptedHosts(configs = [], limit = 6) {
   const compact = configs
     .slice(0, limit)
@@ -287,7 +305,39 @@ function isMailboxMissingError(message) {
   );
 }
 
-function buildUsernameCandidates(email, username) {
+function buildManualConfigCandidates(host, port, secure) {
+  const candidates = [];
+  const seen = new Set();
+  const cleanHost = String(host || '').trim().toLowerCase();
+  const basePort = parsePort(port);
+  const baseSecure = parseSecure(secure, basePort);
+
+  function addCandidate(nextPort, nextSecure, source = 'manual') {
+    const normalizedPort = parsePort(nextPort);
+    const normalizedSecure = parseSecure(nextSecure, normalizedPort);
+    const key = `${cleanHost}:${normalizedPort}:${normalizedSecure ? '1' : '0'}`;
+    if (!cleanHost || seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    candidates.push({
+      host: cleanHost,
+      port: normalizedPort,
+      secure: normalizedSecure,
+      source
+    });
+  }
+
+  addCandidate(basePort, baseSecure, 'manual-primary');
+  addCandidate(465, true, 'manual-fallback-ssl');
+  addCandidate(587, false, 'manual-fallback-starttls');
+  addCandidate(2525, false, 'manual-fallback-2525');
+
+  return candidates;
+}
+
+function buildUsernameCandidates(email, username, options = {}) {
   const provided = String(username || '').trim();
   if (provided) {
     return [provided];
@@ -296,6 +346,10 @@ function buildUsernameCandidates(email, username) {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail || !normalizedEmail.includes('@')) {
     return normalizedEmail ? [normalizedEmail] : [];
+  }
+
+  if (options.emailOnly) {
+    return [normalizedEmail];
   }
 
   const [localPart] = normalizedEmail.split('@');
@@ -404,15 +458,13 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
 
   try {
     let candidateConfigs = [];
-    const usernameCandidates = buildUsernameCandidates(email, username);
     const manualConfigProvided = Boolean(host);
+    const usernameCandidates = buildUsernameCandidates(email, username, {
+      emailOnly: manualConfigProvided
+    });
 
     if (manualConfigProvided) {
-      candidateConfigs.push({
-        host,
-        port,
-        secure
-      });
+      candidateConfigs = buildManualConfigCandidates(host, port, secure);
     } else {
       candidateConfigs = await inferSmtpConfigCandidates(email);
 
@@ -461,6 +513,9 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
                 'Microsoft 365 has SMTP AUTH disabled for this tenant/account. Use "Connect Microsoft Account" OAuth, or ask your Microsoft admin to enable Authenticated SMTP (SmtpClientAuthentication).'
             });
           }
+          if (isSmtpConnectivityFailure(verificationError?.message)) {
+            break;
+          }
         }
       }
 
@@ -490,6 +545,18 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
       if (!manualConfigProvided && isDnsResolutionFailure(detail)) {
         return res.status(400).json({
           error: `Email verification failed. Could not auto-detect reachable SMTP host for this domain. Tried: ${attemptedHosts}. Check domain spelling in email, or connect with Google/Microsoft OAuth if this mailbox is hosted there.`
+        });
+      }
+
+      if (isConnectionTimeout(detail)) {
+        if (manualConfigProvided) {
+          return res.status(400).json({
+            error: `Email verification failed: SMTP server did not respond in time. Tried: ${attemptedHosts}. Check SMTP host, port, SSL/TLS mode, and outbound firewall rules. Detail: ${detail}`
+          });
+        }
+
+        return res.status(400).json({
+          error: `Email verification failed: SMTP server timed out during auto-detection. Tried: ${attemptedHosts}. For custom providers (example: Hostinger), enter SMTP Host/Port/SSL manually and retry. Detail: ${detail}`
         });
       }
 
@@ -528,6 +595,12 @@ router.post('/api/auth/smtp/connect', async (req, res) => {
       return res.status(400).json({
         error:
           'Microsoft 365 has SMTP AUTH disabled for this tenant/account. Use "Connect Microsoft Account" OAuth, or ask your Microsoft admin to enable Authenticated SMTP (SmtpClientAuthentication).'
+      });
+    }
+
+    if (isConnectionTimeout(rawMessage)) {
+      return res.status(400).json({
+        error: `Email verification failed: SMTP server did not respond in time. Check SMTP host/port/SSL settings and network/firewall access. Detail: ${rawMessage || 'timeout'}`
       });
     }
 
