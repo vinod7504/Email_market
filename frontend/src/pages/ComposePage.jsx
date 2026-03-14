@@ -73,6 +73,75 @@ function isImageUrl(url) {
   return /\.(png|jpe?g|gif|webp|svg)(\?.*)?(#.*)?$/i.test(String(url || '').trim());
 }
 
+function isVideoUrl(url) {
+  return /\.(mp4|m4v|webm|ogg|ogv|mov)(\?.*)?(#.*)?$/i.test(String(url || '').trim());
+}
+
+function normalizeYouTubeVideoId(value) {
+  const trimmed = String(value || '').trim();
+  return /^[a-zA-Z0-9_-]{11}$/.test(trimmed) ? trimmed : '';
+}
+
+function getYouTubeVideoId(url) {
+  const trimmed = String(url || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const host = String(parsed.hostname || '').toLowerCase().replace(/^www\./, '');
+    const pathParts = String(parsed.pathname || '')
+      .split('/')
+      .filter(Boolean);
+
+    if (host === 'youtu.be') {
+      return normalizeYouTubeVideoId(pathParts[0]);
+    }
+
+    if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtube-nocookie.com') {
+      const route = String(pathParts[0] || '').toLowerCase();
+      if (route === 'watch') {
+        return normalizeYouTubeVideoId(parsed.searchParams.get('v'));
+      }
+
+      if (['shorts', 'embed', 'live'].includes(route)) {
+        return normalizeYouTubeVideoId(pathParts[1]);
+      }
+
+      return normalizeYouTubeVideoId(parsed.searchParams.get('v'));
+    }
+  } catch (_error) {
+    return '';
+  }
+
+  return '';
+}
+
+function renderLinkedMediaMarkup(url, safeUrl) {
+  if (isImageUrl(url)) {
+    return `<br/><img src="${safeUrl}" alt="" />`;
+  }
+
+  if (isVideoUrl(url)) {
+    return [
+      '<br/>',
+      '<video controls preload="metadata">',
+      `<source src="${safeUrl}" />`,
+      'Your browser does not support the video tag.',
+      '</video>'
+    ].join('');
+  }
+
+  const youtubeVideoId = getYouTubeVideoId(url);
+  if (!youtubeVideoId) {
+    return '';
+  }
+
+  const thumbnailUrl = escapeHtml(`https://img.youtube.com/vi/${youtubeVideoId}/hqdefault.jpg`);
+  return `<br/><a href="${safeUrl}" target="_blank" rel="noopener noreferrer"><img src="${thumbnailUrl}" alt="Watch video" /></a>`;
+}
+
 function containsHtmlMarkup(value) {
   return /<\/?[a-z][^>]*>/i.test(String(value || ''));
 }
@@ -109,8 +178,9 @@ function renderPreviewMarkup(value) {
     if (clean) {
       const safeUrl = escapeHtml(clean);
       html += `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>`;
-      if (isImageUrl(clean)) {
-        html += `<br/><img src="${safeUrl}" alt="" />`;
+      const mediaMarkup = renderLinkedMediaMarkup(clean, safeUrl);
+      if (mediaMarkup) {
+        html += mediaMarkup;
       }
     }
 
@@ -675,7 +745,7 @@ export default function ComposePage({ flow, onRecipientsReady }) {
 
           <div className="card">
             <h2>Email Content</h2>
-            <p>Enter exact subject/body/signature to send. Spam meter updates live from your subject and body text.</p>
+            <p>Enter exact subject/body/signature to send. Paste image/video links in body to auto-render media. Spam meter updates live from your subject and body text.</p>
 
             {!recipientsAvailable && (
               <div className="notice error">

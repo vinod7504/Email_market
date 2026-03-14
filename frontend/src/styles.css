@@ -514,6 +514,14 @@ th {
   margin-top: 8px;
 }
 
+.email-preview-body video {
+  max-width: 100%;
+  height: auto;
+  border-radius: 10px;
+  margin-top: 8px;
+  background: #000;
+}
+
 .split {
   display: grid;
   grid-template-columns: 1.45fr 1fr;
