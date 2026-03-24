@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import AppLayout from '../components/AppLayout';
 import { fetchJson, formatDateTime, resolveApiUrl, withAuthHeaders } from '../lib/api';
@@ -20,13 +20,9 @@ function Notice({ notice }) {
 const RECIPIENTS_PAGE_SIZE = 250;
 const SELECTED_CAMPAIGN_STORAGE_PREFIX = 'mailpilot_selected_campaign:';
 
-function truncateText(value, maxLength = 62) {
-  const text = String(value || '').trim();
-  if (!text || text.length <= maxLength) {
-    return text;
-  }
-
-  return `${text.slice(0, maxLength - 3)}...`;
+function normalizeCampaignId(value) {
+  const normalized = String(value || '').trim();
+  return normalized || null;
 }
 
 function getSelectedCampaignStorageKey(user) {
@@ -62,7 +58,9 @@ export default function DashboardPage({ appUser, onLogout }) {
   const location = useLocation();
   const [auth, setAuth] = useState({ connected: false, activeAccount: null, activeAccountDetails: null });
   const [campaigns, setCampaigns] = useState([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState(() => readStoredSelectedCampaignId(appUser) || null);
+  const [selectedCampaignId, setSelectedCampaignId] = useState(() =>
+    normalizeCampaignId(readStoredSelectedCampaignId(appUser))
+  );
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [recipients, setRecipients] = useState([]);
   const [recipientPagination, setRecipientPagination] = useState({
@@ -75,26 +73,49 @@ export default function DashboardPage({ appUser, onLogout }) {
   });
   const [isExporting, setIsExporting] = useState(false);
   const [notice, setNotice] = useState(null);
+  const selectedCampaignIdRef = useRef(selectedCampaignId);
+  const recipientsRequestRef = useRef(0);
   const selectedFromQuery = useMemo(() => {
     const params = new URLSearchParams(location.search);
-    return params.get('campaign');
+    return normalizeCampaignId(params.get('campaign'));
   }, [location.search]);
+
+  useEffect(() => {
+    selectedCampaignIdRef.current = normalizeCampaignId(selectedCampaignId);
+  }, [selectedCampaignId]);
 
   useEffect(() => {
     if (selectedFromQuery) {
       setSelectedCampaignId(selectedFromQuery);
+      selectedCampaignIdRef.current = selectedFromQuery;
       writeStoredSelectedCampaignId(appUser, selectedFromQuery);
       return;
     }
 
-    const storedCampaignId = readStoredSelectedCampaignId(appUser);
-    setSelectedCampaignId(storedCampaignId || null);
+    const storedCampaignId = normalizeCampaignId(readStoredSelectedCampaignId(appUser));
+    setSelectedCampaignId(storedCampaignId);
+    selectedCampaignIdRef.current = storedCampaignId;
   }, [appUser?.email, selectedFromQuery]);
 
   const loadRecipients = useCallback(async (campaignId, page = 1) => {
-    const data = await fetchJson(`/api/campaigns/${campaignId}/recipients?page=${page}&limit=${RECIPIENTS_PAGE_SIZE}`);
-    setSelectedCampaignId(campaignId);
-    writeStoredSelectedCampaignId(appUser, campaignId);
+    const normalizedCampaignId = normalizeCampaignId(campaignId);
+    if (!normalizedCampaignId) {
+      return;
+    }
+
+    const requestId = recipientsRequestRef.current + 1;
+    recipientsRequestRef.current = requestId;
+
+    const data = await fetchJson(
+      `/api/campaigns/${normalizedCampaignId}/recipients?page=${page}&limit=${RECIPIENTS_PAGE_SIZE}`
+    );
+    if (requestId !== recipientsRequestRef.current) {
+      return;
+    }
+
+    setSelectedCampaignId(normalizedCampaignId);
+    selectedCampaignIdRef.current = normalizedCampaignId;
+    writeStoredSelectedCampaignId(appUser, normalizedCampaignId);
     setSelectedCampaign(data.campaign);
     setRecipients(data.recipients || []);
     setRecipientPagination({
@@ -115,11 +136,14 @@ export default function DashboardPage({ appUser, onLogout }) {
       setAuth(authData);
       setCampaigns(nextCampaigns);
 
-      const storedCampaignId = readStoredSelectedCampaignId(appUser);
-      const preferredCampaignId = selectedCampaignId || selectedFromQuery || storedCampaignId || nextCampaigns[0]?.id || null;
+      const storedCampaignId = normalizeCampaignId(readStoredSelectedCampaignId(appUser));
+      const currentSelectedCampaignId = selectedCampaignIdRef.current;
+      const preferredCampaignId =
+        currentSelectedCampaignId || selectedFromQuery || storedCampaignId || normalizeCampaignId(nextCampaigns[0]?.id);
 
       if (!preferredCampaignId) {
         setSelectedCampaignId(null);
+        selectedCampaignIdRef.current = null;
         setSelectedCampaign(null);
         setRecipients([]);
         writeStoredSelectedCampaignId(appUser, '');
@@ -134,18 +158,19 @@ export default function DashboardPage({ appUser, onLogout }) {
         return;
       }
 
-      const stillExists = nextCampaigns.some((campaign) => campaign.id === preferredCampaignId);
+      const stillExists = nextCampaigns.some((campaign) => normalizeCampaignId(campaign.id) === preferredCampaignId);
       if (stillExists) {
-        const nextPage = preferredCampaignId === selectedCampaignId ? recipientPagination.page || 1 : 1;
+        const nextPage = preferredCampaignId === currentSelectedCampaignId ? recipientPagination.page || 1 : 1;
         await loadRecipients(preferredCampaignId, nextPage);
         return;
       }
 
-      const fallbackCampaignId = nextCampaigns[0]?.id || null;
+      const fallbackCampaignId = normalizeCampaignId(nextCampaigns[0]?.id);
       if (fallbackCampaignId) {
         await loadRecipients(fallbackCampaignId, 1);
       } else {
         setSelectedCampaignId(null);
+        selectedCampaignIdRef.current = null;
         setSelectedCampaign(null);
         setRecipients([]);
         writeStoredSelectedCampaignId(appUser, '');
@@ -161,7 +186,7 @@ export default function DashboardPage({ appUser, onLogout }) {
     } catch (error) {
       setNotice({ type: 'error', message: error.message });
     }
-  }, [appUser?.email, loadRecipients, recipientPagination.page, selectedCampaignId, selectedFromQuery]);
+  }, [appUser?.email, loadRecipients, recipientPagination.page, selectedFromQuery]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -183,11 +208,12 @@ export default function DashboardPage({ appUser, onLogout }) {
   }, [loadDashboard]);
 
   const selectedCampaignMetrics = useMemo(() => {
-    if (!selectedCampaignId) {
+    const normalizedSelectedCampaignId = normalizeCampaignId(selectedCampaignId);
+    if (!normalizedSelectedCampaignId) {
       return null;
     }
 
-    return campaigns.find((campaign) => campaign.id === selectedCampaignId) || null;
+    return campaigns.find((campaign) => normalizeCampaignId(campaign.id) === normalizedSelectedCampaignId) || null;
   }, [campaigns, selectedCampaignId]);
 
   const selectedCampaignSummary = selectedCampaignMetrics || selectedCampaign;
@@ -252,8 +278,13 @@ export default function DashboardPage({ appUser, onLogout }) {
   }, [campaigns, selectedCampaignMetrics]);
 
   async function handleSendNow(campaignId) {
+    const normalizedCampaignId = normalizeCampaignId(campaignId);
+    if (!normalizedCampaignId) {
+      return;
+    }
+
     try {
-      await fetchJson(`/api/campaigns/${campaignId}/send-now`, { method: 'POST' });
+      await fetchJson(`/api/campaigns/${normalizedCampaignId}/send-now`, { method: 'POST' });
       setNotice({ type: 'success', message: 'Campaign queued for immediate send.' });
       await loadDashboard();
     } catch (error) {
@@ -262,8 +293,16 @@ export default function DashboardPage({ appUser, onLogout }) {
   }
 
   async function handleCampaignSelect(campaignId) {
+    const normalizedCampaignId = normalizeCampaignId(campaignId);
+    if (!normalizedCampaignId) {
+      return;
+    }
+
+    setSelectedCampaignId(normalizedCampaignId);
+    selectedCampaignIdRef.current = normalizedCampaignId;
+    writeStoredSelectedCampaignId(appUser, normalizedCampaignId);
     try {
-      await loadRecipients(campaignId, 1);
+      await loadRecipients(normalizedCampaignId, 1);
     } catch (error) {
       setNotice({ type: 'error', message: error.message });
     }
@@ -458,18 +497,23 @@ export default function DashboardPage({ appUser, onLogout }) {
 
                 {campaigns.map((campaign) => {
                   const canSendNow = ['SCHEDULED', 'QUEUED', 'FAILED', 'PARTIAL'].includes(campaign.status);
+                  const campaignId = normalizeCampaignId(campaign.id);
+                  if (!campaignId) {
+                    return null;
+                  }
+
                   return (
                     <tr
-                      key={campaign.id}
-                      className={`table-row-clickable${selectedCampaignId === campaign.id ? ' table-row-selected' : ''}`}
-                      onClick={() => handleCampaignSelect(campaign.id)}
+                      key={campaignId}
+                      className={`table-row-clickable${selectedCampaignId === campaignId ? ' table-row-selected' : ''}`}
+                      onClick={() => handleCampaignSelect(campaignId)}
                     >
                       <td data-label="Name">
                         <button
                           className="table-link"
                           onClick={(event) => {
                             event.stopPropagation();
-                            handleCampaignSelect(campaign.id);
+                            handleCampaignSelect(campaignId);
                           }}
                           type="button"
                         >
@@ -491,7 +535,7 @@ export default function DashboardPage({ appUser, onLogout }) {
                             className="btn btn-warning"
                             onClick={(event) => {
                               event.stopPropagation();
-                              handleSendNow(campaign.id);
+                              handleSendNow(campaignId);
                             }}
                             type="button"
                           >
@@ -552,19 +596,18 @@ export default function DashboardPage({ appUser, onLogout }) {
                   <th>Sent At</th>
                   <th>Opened At</th>
                   <th>Open Count</th>
-                  <th>Tracking Pixel</th>
                 </tr>
               </thead>
               <tbody>
                 {!selectedCampaignSummary && (
                   <tr>
-                    <td colSpan="7">No campaign selected.</td>
+                    <td colSpan="6">No campaign selected.</td>
                   </tr>
                 )}
 
                 {selectedCampaignSummary && !recipients.length && (
                   <tr>
-                    <td colSpan="7">No recipients in this campaign.</td>
+                    <td colSpan="6">No recipients in this campaign.</td>
                   </tr>
                 )}
 
@@ -580,15 +623,6 @@ export default function DashboardPage({ appUser, onLogout }) {
                     <td data-label="Sent At">{formatDateTime(recipient.sent_at)}</td>
                     <td data-label="Opened At">{formatDateTime(recipient.opened_at)}</td>
                     <td data-label="Open Count">{Number(recipient.open_count || 0)}</td>
-                    <td data-label="Tracking Pixel">
-                      {recipient.trackingPixelUrl ? (
-                        <a href={`${recipient.trackingPixelUrl}&force_track=1`} target="_blank" rel="noopener noreferrer" title={recipient.trackingPixelUrl}>
-                          {truncateText(recipient.trackingPixelUrl, 48)}
-                        </a>
-                      ) : (
-                        '-'
-                      )}
-                    </td>
                   </tr>
                 ))}
               </tbody>
