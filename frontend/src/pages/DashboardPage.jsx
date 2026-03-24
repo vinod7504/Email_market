@@ -18,6 +18,7 @@ function Notice({ notice }) {
 }
 
 const RECIPIENTS_PAGE_SIZE = 250;
+const SELECTED_CAMPAIGN_STORAGE_PREFIX = 'mailpilot_selected_campaign:';
 
 function truncateText(value, maxLength = 62) {
   const text = String(value || '').trim();
@@ -28,11 +29,40 @@ function truncateText(value, maxLength = 62) {
   return `${text.slice(0, maxLength - 3)}...`;
 }
 
+function getSelectedCampaignStorageKey(user) {
+  const userEmail = String(user?.email || '').trim().toLowerCase();
+  return `${SELECTED_CAMPAIGN_STORAGE_PREFIX}${userEmail || 'unknown'}`;
+}
+
+function readStoredSelectedCampaignId(user) {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return '';
+  }
+
+  const key = getSelectedCampaignStorageKey(user);
+  return String(window.localStorage.getItem(key) || '').trim();
+}
+
+function writeStoredSelectedCampaignId(user, campaignId) {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+
+  const key = getSelectedCampaignStorageKey(user);
+  const normalizedCampaignId = String(campaignId || '').trim();
+  if (!normalizedCampaignId) {
+    window.localStorage.removeItem(key);
+    return;
+  }
+
+  window.localStorage.setItem(key, normalizedCampaignId);
+}
+
 export default function DashboardPage({ appUser, onLogout }) {
   const location = useLocation();
   const [auth, setAuth] = useState({ connected: false, activeAccount: null, activeAccountDetails: null });
   const [campaigns, setCampaigns] = useState([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState(null);
+  const [selectedCampaignId, setSelectedCampaignId] = useState(() => readStoredSelectedCampaignId(appUser) || null);
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [recipients, setRecipients] = useState([]);
   const [recipientPagination, setRecipientPagination] = useState({
@@ -50,9 +80,21 @@ export default function DashboardPage({ appUser, onLogout }) {
     return params.get('campaign');
   }, [location.search]);
 
+  useEffect(() => {
+    if (selectedFromQuery) {
+      setSelectedCampaignId(selectedFromQuery);
+      writeStoredSelectedCampaignId(appUser, selectedFromQuery);
+      return;
+    }
+
+    const storedCampaignId = readStoredSelectedCampaignId(appUser);
+    setSelectedCampaignId(storedCampaignId || null);
+  }, [appUser?.email, selectedFromQuery]);
+
   const loadRecipients = useCallback(async (campaignId, page = 1) => {
     const data = await fetchJson(`/api/campaigns/${campaignId}/recipients?page=${page}&limit=${RECIPIENTS_PAGE_SIZE}`);
     setSelectedCampaignId(campaignId);
+    writeStoredSelectedCampaignId(appUser, campaignId);
     setSelectedCampaign(data.campaign);
     setRecipients(data.recipients || []);
     setRecipientPagination({
@@ -63,7 +105,7 @@ export default function DashboardPage({ appUser, onLogout }) {
       hasNextPage: Boolean(data.pagination?.hasNextPage),
       hasPreviousPage: Boolean(data.pagination?.hasPreviousPage)
     });
-  }, []);
+  }, [appUser?.email]);
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -73,29 +115,53 @@ export default function DashboardPage({ appUser, onLogout }) {
       setAuth(authData);
       setCampaigns(nextCampaigns);
 
-      const targetCampaignId = selectedCampaignId || selectedFromQuery;
-      if (targetCampaignId) {
-        const stillExists = nextCampaigns.some((campaign) => campaign.id === targetCampaignId);
-        if (stillExists) {
-          await loadRecipients(targetCampaignId, recipientPagination.page || 1);
-        } else {
-          setSelectedCampaignId(null);
-          setSelectedCampaign(null);
-          setRecipients([]);
-          setRecipientPagination({
-            page: 1,
-            limit: RECIPIENTS_PAGE_SIZE,
-            total: 0,
-            totalPages: 1,
-            hasNextPage: false,
-            hasPreviousPage: false
-          });
-        }
+      const storedCampaignId = readStoredSelectedCampaignId(appUser);
+      const preferredCampaignId = selectedCampaignId || selectedFromQuery || storedCampaignId || nextCampaigns[0]?.id || null;
+
+      if (!preferredCampaignId) {
+        setSelectedCampaignId(null);
+        setSelectedCampaign(null);
+        setRecipients([]);
+        writeStoredSelectedCampaignId(appUser, '');
+        setRecipientPagination({
+          page: 1,
+          limit: RECIPIENTS_PAGE_SIZE,
+          total: 0,
+          totalPages: 1,
+          hasNextPage: false,
+          hasPreviousPage: false
+        });
+        return;
+      }
+
+      const stillExists = nextCampaigns.some((campaign) => campaign.id === preferredCampaignId);
+      if (stillExists) {
+        const nextPage = preferredCampaignId === selectedCampaignId ? recipientPagination.page || 1 : 1;
+        await loadRecipients(preferredCampaignId, nextPage);
+        return;
+      }
+
+      const fallbackCampaignId = nextCampaigns[0]?.id || null;
+      if (fallbackCampaignId) {
+        await loadRecipients(fallbackCampaignId, 1);
+      } else {
+        setSelectedCampaignId(null);
+        setSelectedCampaign(null);
+        setRecipients([]);
+        writeStoredSelectedCampaignId(appUser, '');
+        setRecipientPagination({
+          page: 1,
+          limit: RECIPIENTS_PAGE_SIZE,
+          total: 0,
+          totalPages: 1,
+          hasNextPage: false,
+          hasPreviousPage: false
+        });
       }
     } catch (error) {
       setNotice({ type: 'error', message: error.message });
     }
-  }, [loadRecipients, recipientPagination.page, selectedCampaignId, selectedFromQuery]);
+  }, [appUser?.email, loadRecipients, recipientPagination.page, selectedCampaignId, selectedFromQuery]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -128,6 +194,28 @@ export default function DashboardPage({ appUser, onLogout }) {
   const campaignScopeDescription = appUser?.isAdmin
     ? 'All campaign runs with sending and open-tracking status.'
     : 'Campaign runs created under this login account.';
+  const selectedCampaignDetails = useMemo(() => {
+    if (!selectedCampaignSummary) {
+      return [];
+    }
+
+    return [
+      { label: 'Campaign Name', value: selectedCampaignSummary.name || '-' },
+      { label: 'Status', value: selectedCampaignSummary.status || '-' },
+      {
+        label: 'Sender Account',
+        value: selectedCampaignSummary.account_email
+          ? `${selectedCampaignSummary.account_email} (${String(selectedCampaignSummary.account_type || 'google').toUpperCase()})`
+          : '-'
+      },
+      { label: 'Created At', value: formatDateTime(selectedCampaignSummary.created_at) },
+      { label: 'Scheduled At', value: formatDateTime(selectedCampaignSummary.scheduled_at) },
+      { label: 'Recipients', value: Number(selectedCampaignSummary.total_recipients || 0) },
+      { label: 'Sent', value: Number(selectedCampaignSummary.sent_count || 0) },
+      { label: 'Opened', value: Number(selectedCampaignSummary.opened_count || 0) },
+      { label: 'Failed', value: Number(selectedCampaignSummary.failed_count || 0) }
+    ];
+  }, [selectedCampaignSummary]);
 
   const kpis = useMemo(() => {
     if (selectedCampaignMetrics) {
@@ -325,6 +413,23 @@ export default function DashboardPage({ appUser, onLogout }) {
         ))}
       </section>
       <small className="muted">{kpis.scope}</small>
+      {selectedCampaignSummary && (
+        <section className="card section-gap">
+          <h3>Selected Campaign Details</h3>
+          <div className="campaign-detail-grid space-top-small">
+            {selectedCampaignDetails.map((item) => (
+              <div className="campaign-detail-item" key={item.label}>
+                <div className="campaign-detail-label">{item.label}</div>
+                <div className="campaign-detail-value">{item.value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="space-top-small">
+            <div className="campaign-detail-label">Subject</div>
+            <div className="notice">{selectedCampaignSummary.subject || '-'}</div>
+          </div>
+        </section>
+      )}
 
       <section className="split section-gap">
         <div className="card">

@@ -277,11 +277,8 @@ function canManageEmail(reqUser, targetEmail) {
     return false;
   }
 
-  if (reqUser.isAdmin) {
-    return true;
-  }
-
-  return normalizeEmail(reqUser.email) === normalizeEmail(targetEmail);
+  const normalizedTarget = normalizeEmail(targetEmail);
+  return Boolean(normalizedTarget && normalizedTarget.includes('@'));
 }
 
 function getBodyValue(body, keys = []) {
@@ -649,10 +646,10 @@ router.get('/api/auth/status', requireAppUser, async (req, res) => {
     const user = getAuthenticatedUser(req);
     const scope = {
       ownerEmail: user.email,
-      includeAll: user.isAdmin
+      includeAll: false
     };
     const [activeAccount, accounts] = await Promise.all([
-      getActiveSenderAccount(user.email, { includeAll: scope.includeAll }),
+      getActiveSenderAccount(user.email, { includeAll: false }),
       listConnectedAccounts(scope)
     ]);
 
@@ -684,13 +681,10 @@ router.get('/api/auth/google/url', requireAppUser, (req, res) => {
 
   try {
     const user = getAuthenticatedUser(req);
-    let requestedSenderEmail = normalizeEmail(req.query?.senderEmail || req.query?.aliasEmail || '');
-    if (!user.isAdmin) {
-      requestedSenderEmail = user.email;
-    }
+    const requestedSenderEmail = normalizeEmail(req.query?.senderEmail || req.query?.aliasEmail || '');
 
     if (requestedSenderEmail && !canManageEmail(user, requestedSenderEmail)) {
-      return res.status(403).json({ error: 'You can only connect sender accounts for your own login.' });
+      return res.status(400).json({ error: 'Valid sender email is required.' });
     }
 
     const redirectUri = getGoogleRedirectUri(req);
@@ -771,7 +765,7 @@ router.post('/api/auth/smtp/connect', requireAppUser, async (req, res) => {
   }
 
   if (!canManageEmail(user, email)) {
-    return res.status(403).json({ error: 'You can only connect sender accounts for your own login.' });
+    return res.status(400).json({ error: 'Valid sender email is required.' });
   }
 
   try {
@@ -891,13 +885,14 @@ router.post('/api/auth/smtp/connect', requireAppUser, async (req, res) => {
       secure: verifiedConfig.secure,
       username: verifiedUsername || email,
       password,
-      fromName
+      fromName,
+      ownerEmail: user.email
     });
 
     await setActiveAccountEmail(account.email, user.email);
     const accounts = await listConnectedAccounts({
       ownerEmail: user.email,
-      includeAll: user.isAdmin
+      includeAll: false
     });
 
     return res.json({
@@ -978,7 +973,10 @@ router.post('/api/auth/smtp/add-alias', requireAppUser, async (req, res) => {
       if (!canManageEmail(appUser, baseAccountEmail)) {
         return res.status(403).json({ error: 'Base SMTP account is outside your login scope.' });
       }
-      baseSmtpAccount = await getSmtpAccount(baseAccountEmail);
+      baseSmtpAccount = await getSmtpAccount(baseAccountEmail, {
+        ownerEmail: appUser.email,
+        includeAll: false
+      });
       if (!baseSmtpAccount) {
         return res.status(404).json({ error: `Base SMTP account not found: ${baseAccountEmail}` });
       }
@@ -987,20 +985,26 @@ router.post('/api/auth/smtp/add-alias', requireAppUser, async (req, res) => {
       if (activeEmail) {
         const activeAccount = await getConnectedAccount(activeEmail, {
           ownerEmail: appUser.email,
-          includeAll: appUser.isAdmin
+          includeAll: false
         });
         if (activeAccount?.provider === 'smtp') {
-          baseSmtpAccount = await getSmtpAccount(activeEmail);
+          baseSmtpAccount = await getSmtpAccount(activeEmail, {
+            ownerEmail: appUser.email,
+            includeAll: false
+          });
         }
       }
 
       if (!baseSmtpAccount) {
         const smtpAccounts = await listSmtpAccounts({
           ownerEmail: appUser.email,
-          includeAll: appUser.isAdmin
+          includeAll: false
         });
         if (smtpAccounts.length > 0) {
-          baseSmtpAccount = await getSmtpAccount(smtpAccounts[0].email);
+          baseSmtpAccount = await getSmtpAccount(smtpAccounts[0].email, {
+            ownerEmail: appUser.email,
+            includeAll: false
+          });
         }
       }
     }
@@ -1019,13 +1023,14 @@ router.post('/api/auth/smtp/add-alias', requireAppUser, async (req, res) => {
       secure: baseSmtpAccount.secure,
       username: baseSmtpAccount.username,
       password: baseSmtpAccount.password,
-      fromName: fromName || baseSmtpAccount.from_name || ''
+      fromName: fromName || baseSmtpAccount.from_name || '',
+      ownerEmail: appUser.email
     });
 
     await setActiveAccountEmail(account.email, appUser.email);
     const accounts = await listConnectedAccounts({
       ownerEmail: appUser.email,
-      includeAll: appUser.isAdmin
+      includeAll: false
     });
 
     return res.json({
@@ -1058,7 +1063,7 @@ router.post('/api/auth/select-account', requireAppUser, async (req, res) => {
   try {
     const account = await getConnectedAccount(normalizeEmail(email), {
       ownerEmail: appUser.email,
-      includeAll: appUser.isAdmin
+      includeAll: false
     });
     if (!account) {
       return res.status(404).json({ error: 'Account not found.' });
@@ -1086,14 +1091,14 @@ async function handleDisconnect(req, res) {
     }
 
     const result = await disconnectConnectedAccount(targetEmail, appUser.email, {
-      includeAll: appUser.isAdmin
+      includeAll: false
     });
     const scope = {
       ownerEmail: appUser.email,
-      includeAll: appUser.isAdmin
+      includeAll: false
     };
     const accounts = await listConnectedAccounts(scope);
-    const activeAccount = await getActiveSenderAccount(appUser.email, { includeAll: appUser.isAdmin });
+    const activeAccount = await getActiveSenderAccount(appUser.email, { includeAll: false });
 
     return res.json({
       ok: true,
@@ -1157,9 +1162,9 @@ router.get('/auth/google/callback', async (req, res) => {
       }
     }
 
-    await saveGoogleAccount(user.email, user.tokens);
+    await saveGoogleAccount(user.email, user.tokens, { ownerEmail: appUserEmail });
     if (requestedSenderEmail) {
-      await saveGoogleAccount(requestedSenderEmail, user.tokens);
+      await saveGoogleAccount(requestedSenderEmail, user.tokens, { ownerEmail: appUserEmail });
       await setActiveAccountEmail(requestedSenderEmail, appUserEmail);
     } else {
       await setActiveAccountEmail(user.email, appUserEmail);
@@ -1206,7 +1211,9 @@ router.get('/auth/microsoft/callback', async (req, res) => {
     const user = await exchangeMicrosoftCodeForUser(code, state, {
       redirectUri: isValidMicrosoftRedirectUri(redirectUri) ? redirectUri : undefined
     });
-    await saveMicrosoftAccount(user.email, user.tokens);
+    await saveMicrosoftAccount(user.email, user.tokens, {
+      ownerEmail: user.appUserEmail || user.email
+    });
     await setActiveAccountEmail(user.email, user.appUserEmail || user.email);
 
     return res.redirect(

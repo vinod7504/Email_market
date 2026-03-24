@@ -420,7 +420,7 @@ router.post('/api/campaigns', upload.single('excelFile'), async (req, res) => {
       return res.status(400).json({ error: 'Excel sheet is required.' });
     }
 
-    const activeAccount = await getActiveSenderAccount(user.email, { includeAll: user.isAdmin });
+    const activeAccount = await getActiveSenderAccount(user.email, { includeAll: false });
     if (!activeAccount) {
       return res.status(400).json({ error: 'Connect a sender account before creating a campaign.' });
     }

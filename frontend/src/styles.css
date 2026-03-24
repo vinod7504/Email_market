@@ -575,6 +575,11 @@ th {
   background: #fafcff;
 }
 
+.preview-list-full {
+  max-height: none;
+  overflow: visible;
+}
+
 .preview-item {
   padding: 6px 8px;
   border-bottom: 1px solid #ebf0f8;
@@ -619,6 +624,78 @@ th {
   background: #000;
 }
 
+.richtext-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.richtext-btn {
+  border: 1px solid #c6d3e5;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #0f172a;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.richtext-btn:hover {
+  background: #eef4ff;
+}
+
+.richtext-color-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d5e2f2;
+  border-radius: 10px;
+  background: #fff;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.richtext-color-input {
+  width: 34px;
+  min-width: 34px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid #c6d3e5;
+  border-radius: 8px;
+}
+
+.campaign-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.campaign-detail-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8fbff;
+  padding: 10px;
+}
+
+.campaign-detail-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.campaign-detail-value {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .split {
   display: grid;
   grid-template-columns: 1.45fr 1fr;
@@ -660,7 +737,8 @@ small.muted {
 
   .split,
   .grid-2,
-  .kpi-grid {
+  .kpi-grid,
+  .campaign-detail-grid {
     grid-template-columns: 1fr;
   }
 

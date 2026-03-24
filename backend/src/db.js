@@ -25,6 +25,7 @@ const settingSchema = new Schema(
 const googleAccountSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, index: true },
+    owner_email: { type: String, default: null, index: true },
     token_json: { type: Schema.Types.Mixed, required: true },
     connected_at: { type: Date, required: true },
     updated_at: { type: Date, required: true }
@@ -37,6 +38,7 @@ googleAccountSchema.index({ updated_at: -1 });
 const microsoftAccountSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, index: true },
+    owner_email: { type: String, default: null, index: true },
     token_json: { type: Schema.Types.Mixed, required: true },
     connected_at: { type: Date, required: true },
     updated_at: { type: Date, required: true }
@@ -49,6 +51,7 @@ microsoftAccountSchema.index({ updated_at: -1 });
 const smtpAccountSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, index: true },
+    owner_email: { type: String, default: null, index: true },
     host: { type: String, required: true },
     port: { type: Number, required: true },
     secure: { type: Boolean, required: true, default: true },
@@ -499,8 +502,9 @@ async function revokeAppSession(token) {
   return Boolean(result.deletedCount);
 }
 
-async function saveGoogleAccount(email, tokens) {
+async function saveGoogleAccount(email, tokens, options = {}) {
   const normalized = normalizeEmail(email);
+  const ownerEmail = normalizeEmail(options.ownerEmail || email);
   const now = nowDate();
 
   await GoogleAccount.findOneAndUpdate(
@@ -508,6 +512,7 @@ async function saveGoogleAccount(email, tokens) {
     {
       $set: {
         email: normalized,
+        owner_email: ownerEmail || null,
         token_json: tokens,
         updated_at: now
       },
@@ -529,8 +534,30 @@ async function updateGoogleAccountTokens(email, tokens) {
   );
 }
 
-async function getGoogleAccount(email) {
-  const row = await GoogleAccount.findOne({ email: normalizeEmail(email) }).lean();
+function buildAccountLookupFilter(email, options = {}) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    return null;
+  }
+
+  const ownerFilter = buildAccountEmailFilter(options);
+  if (!Object.keys(ownerFilter).length) {
+    return { email: normalized };
+  }
+
+  return {
+    email: normalized,
+    ...ownerFilter
+  };
+}
+
+async function getGoogleAccount(email, options = {}) {
+  const lookupFilter = buildAccountLookupFilter(email, options);
+  if (!lookupFilter) {
+    return null;
+  }
+
+  const row = await GoogleAccount.findOne(lookupFilter).lean();
   if (!row) {
     return null;
   }
@@ -550,8 +577,9 @@ async function getActiveGoogleAccount(userEmail = '') {
   return getGoogleAccount(email);
 }
 
-async function saveMicrosoftAccount(email, tokens) {
+async function saveMicrosoftAccount(email, tokens, options = {}) {
   const normalized = normalizeEmail(email);
+  const ownerEmail = normalizeEmail(options.ownerEmail || email);
   const now = nowDate();
 
   await MicrosoftAccount.findOneAndUpdate(
@@ -559,6 +587,7 @@ async function saveMicrosoftAccount(email, tokens) {
     {
       $set: {
         email: normalized,
+        owner_email: ownerEmail || null,
         token_json: tokens,
         updated_at: now
       },
@@ -580,8 +609,13 @@ async function updateMicrosoftAccountTokens(email, tokens) {
   );
 }
 
-async function getMicrosoftAccount(email) {
-  const row = await MicrosoftAccount.findOne({ email: normalizeEmail(email) }).lean();
+async function getMicrosoftAccount(email, options = {}) {
+  const lookupFilter = buildAccountLookupFilter(email, options);
+  if (!lookupFilter) {
+    return null;
+  }
+
+  const row = await MicrosoftAccount.findOne(lookupFilter).lean();
   if (!row) {
     return null;
   }
@@ -594,6 +628,7 @@ async function getMicrosoftAccount(email) {
 
 async function saveSmtpAccount(payload = {}) {
   const email = normalizeEmail(payload.email);
+  const ownerEmail = normalizeEmail(payload.ownerEmail || email);
   if (!email) {
     throw new Error('SMTP email is required.');
   }
@@ -622,6 +657,7 @@ async function saveSmtpAccount(payload = {}) {
     {
       $set: {
         email,
+        owner_email: ownerEmail || null,
         host,
         port: normalizePort(payload.port),
         secure: normalizeSecureFlag(payload.secure),
@@ -640,11 +676,16 @@ async function saveSmtpAccount(payload = {}) {
     }
   );
 
-  return getSmtpAccount(email);
+  return getSmtpAccount(email, { ownerEmail, includeAll: true });
 }
 
-async function getSmtpAccount(email) {
-  const row = await SmtpAccount.findOne({ email: normalizeEmail(email) }).lean();
+async function getSmtpAccount(email, options = {}) {
+  const lookupFilter = buildAccountLookupFilter(email, options);
+  if (!lookupFilter) {
+    return null;
+  }
+
+  const row = await SmtpAccount.findOne(lookupFilter).lean();
   return serializeDocument(row);
 }
 
@@ -655,7 +696,13 @@ function buildAccountEmailFilter(options = {}) {
     return {};
   }
 
-  return { email: ownerEmail };
+  return {
+    $or: [
+      { owner_email: ownerEmail },
+      { owner_email: null, email: ownerEmail },
+      { owner_email: { $exists: false }, email: ownerEmail }
+    ]
+  };
 }
 
 async function listSmtpAccounts(options = {}) {
@@ -728,17 +775,11 @@ async function listConnectedAccounts(options = {}) {
 
 async function getConnectedAccount(email, options = {}) {
   const normalized = normalizeEmail(email);
-  const ownerEmail = normalizeEmail(options.ownerEmail);
-  const includeAll = Boolean(options.includeAll);
   if (!normalized) {
     return null;
   }
 
-  if (!includeAll && ownerEmail && normalized !== ownerEmail) {
-    return null;
-  }
-
-  const google = await getGoogleAccount(normalized);
+  const google = await getGoogleAccount(normalized, options);
   if (google) {
     return {
       ...google,
@@ -746,7 +787,7 @@ async function getConnectedAccount(email, options = {}) {
     };
   }
 
-  const microsoft = await getMicrosoftAccount(normalized);
+  const microsoft = await getMicrosoftAccount(normalized, options);
   if (microsoft) {
     return {
       ...microsoft,
@@ -754,7 +795,7 @@ async function getConnectedAccount(email, options = {}) {
     };
   }
 
-  const smtp = await getSmtpAccount(normalized);
+  const smtp = await getSmtpAccount(normalized, options);
   if (smtp) {
     return {
       ...smtp,
@@ -795,7 +836,10 @@ async function disconnectGoogleAccount(email, userEmail = '') {
     };
   }
 
-  const result = await GoogleAccount.deleteOne({ email: normalizedEmail });
+  const deleteFilter = buildAccountLookupFilter(normalizedEmail, {
+    ownerEmail: normalizedUserEmail
+  });
+  const result = await GoogleAccount.deleteOne(deleteFilter || { email: normalizedEmail });
   const activeEmail = await getActiveAccountEmail(normalizedUserEmail);
 
   if (activeEmail === normalizedEmail) {
@@ -821,14 +865,6 @@ async function disconnectConnectedAccount(email, userEmail = '', options = {}) {
   const normalizedUserEmail = normalizeEmail(userEmail);
   const includeAll = Boolean(options.includeAll);
 
-  if (!includeAll && normalizedUserEmail && normalizedEmail && normalizedEmail !== normalizedUserEmail) {
-    return {
-      disconnected: false,
-      disconnectedEmail: normalizedEmail,
-      activeAccount: await getActiveAccountEmail(normalizedUserEmail)
-    };
-  }
-
   if (!normalizedEmail) {
     return {
       disconnected: false,
@@ -837,10 +873,14 @@ async function disconnectConnectedAccount(email, userEmail = '', options = {}) {
     };
   }
 
+  const deleteFilter = buildAccountLookupFilter(normalizedEmail, {
+    ownerEmail: normalizedUserEmail,
+    includeAll
+  });
   const [googleResult, microsoftResult, smtpResult] = await Promise.all([
-    GoogleAccount.deleteOne({ email: normalizedEmail }),
-    MicrosoftAccount.deleteOne({ email: normalizedEmail }),
-    SmtpAccount.deleteOne({ email: normalizedEmail })
+    GoogleAccount.deleteOne(deleteFilter || { email: normalizedEmail }),
+    MicrosoftAccount.deleteOne(deleteFilter || { email: normalizedEmail }),
+    SmtpAccount.deleteOne(deleteFilter || { email: normalizedEmail })
   ]);
 
   const activeEmail = await getActiveAccountEmail(normalizedUserEmail);

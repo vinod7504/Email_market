@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AppLayout from '../components/AppLayout';
 import { fetchJson } from '../lib/api';
@@ -173,6 +173,7 @@ function renderPreviewMarkup(value) {
 
 export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout }) {
   const navigate = useNavigate();
+  const bodyTextareaRef = useRef(null);
 
   const [auth, setAuth] = useState({
     connected: false,
@@ -189,6 +190,8 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
   const [subjectText, setSubjectText] = useState('');
   const [bodyText, setBodyText] = useState('');
   const [signature, setSignature] = useState('');
+  const [textColor, setTextColor] = useState('#0f766e');
+  const [highlightColor, setHighlightColor] = useState('#fde68a');
   const [scheduleAt, setScheduleAt] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [smtp, setSmtp] = useState({
@@ -260,6 +263,65 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
   const recipientsAvailable = Boolean(flow.excelFile && flow.preview?.total > 0);
   const finalBodyPreview = composeEmailBody(bodyText, signature);
   const finalBodyPreviewMarkup = renderPreviewMarkup(finalBodyPreview);
+
+  function keepBodySelection(event) {
+    event.preventDefault();
+  }
+
+  function applyMarkupToBody(prefix, suffix, placeholderText = '') {
+    const textarea = bodyTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.focus();
+    const start = Number.isFinite(textarea.selectionStart) ? textarea.selectionStart : 0;
+    const end = Number.isFinite(textarea.selectionEnd) ? textarea.selectionEnd : start;
+    let nextSelectionStart = start + prefix.length;
+    let nextSelectionEnd = nextSelectionStart;
+
+    setBodyText((current) => {
+      const selected = current.slice(start, end);
+      const content = selected || placeholderText;
+      const nextValue = `${current.slice(0, start)}${prefix}${content}${suffix}${current.slice(end)}`;
+      nextSelectionEnd = nextSelectionStart + content.length;
+      return nextValue;
+    });
+
+    requestAnimationFrame(() => {
+      const target = bodyTextareaRef.current;
+      if (!target) {
+        return;
+      }
+
+      target.focus();
+      target.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    });
+  }
+
+  function handleInsertBold() {
+    applyMarkupToBody('<strong>', '</strong>', 'bold text');
+  }
+
+  function handleInsertItalic() {
+    applyMarkupToBody('<em>', '</em>', 'italic text');
+  }
+
+  function handleInsertUnderline() {
+    applyMarkupToBody('<u>', '</u>', 'underlined text');
+  }
+
+  function handleInsertTextColor() {
+    applyMarkupToBody(`<span style="color: ${textColor};">`, '</span>', 'colored text');
+  }
+
+  function handleInsertHighlightColor() {
+    applyMarkupToBody(`<span style="background-color: ${highlightColor};">`, '</span>', 'highlight text');
+  }
+
+  function handleInsertBulletList() {
+    applyMarkupToBody('<ul><li>', '</li></ul>', 'List item');
+  }
 
   async function handleConnectGoogle() {
     setConnectionNotice(null);
@@ -746,12 +808,56 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
             />
 
             <label htmlFor="bodyText">Body</label>
+            <div className="richtext-toolbar" role="toolbar" aria-label="Email body formatting options">
+              <button className="richtext-btn" type="button" onMouseDown={keepBodySelection} onClick={handleInsertBold}>
+                Bold
+              </button>
+              <button className="richtext-btn" type="button" onMouseDown={keepBodySelection} onClick={handleInsertItalic}>
+                Italic
+              </button>
+              <button className="richtext-btn" type="button" onMouseDown={keepBodySelection} onClick={handleInsertUnderline}>
+                Underline
+              </button>
+              <button className="richtext-btn" type="button" onMouseDown={keepBodySelection} onClick={handleInsertBulletList}>
+                Bullets
+              </button>
+              <label className="richtext-color-control" htmlFor="bodyTextColor">
+                Text Color
+                <input
+                  id="bodyTextColor"
+                  className="richtext-color-input"
+                  type="color"
+                  value={textColor}
+                  onChange={(event) => setTextColor(event.target.value)}
+                />
+              </label>
+              <button className="richtext-btn" type="button" onMouseDown={keepBodySelection} onClick={handleInsertTextColor}>
+                Apply Color
+              </button>
+              <label className="richtext-color-control" htmlFor="bodyHighlightColor">
+                Highlight
+                <input
+                  id="bodyHighlightColor"
+                  className="richtext-color-input"
+                  type="color"
+                  value={highlightColor}
+                  onChange={(event) => setHighlightColor(event.target.value)}
+                />
+              </label>
+              <button className="richtext-btn" type="button" onMouseDown={keepBodySelection} onClick={handleInsertHighlightColor}>
+                Apply Highlight
+              </button>
+            </div>
             <textarea
               id="bodyText"
+              ref={bodyTextareaRef}
               value={bodyText}
               onChange={(event) => setBodyText(event.target.value)}
               placeholder="Write email body exactly as you want to send"
             />
+            <small className="muted">
+              Select text and use toolbar options for bold, color, highlight, or bullet styles. Advanced HTML styling is also supported.
+            </small>
 
             <label htmlFor="signature">Signature</label>
             <textarea
@@ -802,7 +908,7 @@ export default function ComposePage({ flow, onRecipientsReady, appUser, onLogout
             <div className="notice">{subjectText || 'Subject preview appears here.'}</div>
 
             <label>Body + Signature</label>
-            <div className="preview-list">
+            <div className="preview-list preview-list-full">
               <div className="preview-item">
                 {finalBodyPreviewMarkup ? (
                   <div className="email-preview-body" dangerouslySetInnerHTML={{ __html: finalBodyPreviewMarkup }} />
